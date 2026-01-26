@@ -76,6 +76,8 @@ client = tweepy.Client(
     access_token=os.getenv('ACCESS_TOKEN'),
     access_token_secret=os.getenv('ACCESS_TOKEN_SECRET'),
     wait_on_rate_limit=True
+    # Forces OAuth 1.0a User Context instead of App-Only
+    user_auth=True
 )
 
 me = client.get_me().data
