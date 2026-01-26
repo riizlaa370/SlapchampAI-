@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 
 # ── CONFIG ──────────────────────────────────────────────────────────────
 BOT_USERNAME = "slapchapAI"  # Change if your bot handle is different
-COOLDOWN_SECONDS = 300  # 5 minutes cooldown per attacker-target pair
+COOLDOWN_SECONDS = 300  # 4 minutes cooldown per attacker-target pair
 
 # Tenor slap GIFs (10 links – add more anytime)
 SLAP_GIFS = [
