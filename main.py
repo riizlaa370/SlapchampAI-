@@ -75,9 +75,10 @@ client = tweepy.Client(
     consumer_secret=os.getenv("TWITTER_API_SECRET"),
     access_token=os.getenv('ACCESS_TOKEN'),
     access_token_secret=os.getenv('ACCESS_TOKEN_SECRET'),
-    wait_on_rate_limit=True
+    user_auth=True,
     # Forces OAuth 1.0a User Context instead of App-Only
-    user_auth=True
+    wait_on_rate_limit=True
+    
 )
 
 me = client.get_me().data
