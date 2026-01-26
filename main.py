@@ -1,4 +1,12 @@
 import os
+import sys
+
+print("All environment variables:", file=sys.stderr)
+for k, v in sorted(os.environ.items()):
+    if "TWITTER" in k.upper() or "API" in k.upper() or "OAUTH" in k.upper() or "BEARER" in k.upper():
+        print(f"  {k} = {v[:8]}... (truncated)", file=sys.stderr)
+print("-" * 60, file=sys.stderr)
+import os
 import tweepy
 import random
 import time
