@@ -1,11 +1,33 @@
 import os
 import sys
 
-print("All environment variables:", file=sys.stderr)
-for k, v in sorted(os.environ.items()):
-    if "TWITTER" in k.upper() or "API" in k.upper() or "OAUTH" in k.upper() or "BEARER" in k.upper():
-        print(f"  {k} = {v[:8]}... (truncated)", file=sys.stderr)
-print("-" * 60, file=sys.stderr)
+print("=== ENV DEBUG START ===", file=sys.stderr)
+keys_we_care_about = [
+    "TWITTER_API_KEY",
+    "TWITTER_API_SECRET",
+    "TWITTER_CONSUMER_KEY",
+    "TWITTER_CONSUMER_SECRET",
+    "TWITTER_ACCESS_TOKEN",
+    "TWITTER_ACCESS_TOKEN_SECRET",
+    "TWITTER_BEARER_TOKEN",
+    "API_KEY", "CONSUMER_KEY", "ACCESS_TOKEN"  # common alternatives
+]
+
+for key in keys_we_care_about:
+    value = os.getenv(key)
+    if value:
+        print(f"{key}: present (starts with {value[:6]}...)", file=sys.stderr)
+    else:
+        print(f"{key}: MISSING / None", file=sys.stderr)
+
+print("Full TWITTER* vars:", file=sys.stderr)
+for k, v in os.environ.items():
+    if k.upper().startswith("TWITTER") or "OAUTH" in k.upper():
+        print(f"  {k} = {v[:10]}...", file=sys.stderr)
+
+print("=== ENV DEBUG END ===", file=sys.stderr)
+
+# ← rest of your code continues here
 import os
 import tweepy
 import random
