@@ -235,7 +235,7 @@ while True:
                 f"{gif}\n"
                 f"Slapped by @{tweet.author.username} — Powered by Grok 🔥"
             )
-            print("Attempting to post reply with user auth...", file=sys.stderr)
+            print("Trying to post reply – using user context auth", file=sys.stderr)
             # Post reply
             client.create_tweet(
                 text=reply_text,
