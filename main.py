@@ -235,7 +235,12 @@ while True:
                 f"{gif}\n"
                 f"Slapped by @{tweet.author.username} — Powered by Grok 🔥"
             )
-            print("Trying to post reply – using user context auth", file=sys.stderr)
+            # TEMP TEST: Can we post?
+try:
+    test_reply = client.create_tweet(text="Test post from SlapchampAI – write access check 🚀")
+    print("TEST SUCCESS: Posted tweet ID:", test_reply.data["id"], file=sys.stderr)
+except Exception as e:
+    print("TEST WRITE FAILED:", str(e), file=sys.stderr)
             # Post reply
             client.create_tweet(
                 text=reply_text,
