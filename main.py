@@ -4,13 +4,12 @@ import random
 import time
 import json
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 
 # ── CONFIG ──────────────────────────────────────────────────────────────
-BOT_USERNAME = "slapchampAI"  # Change if your bot handle is different
-COOLDOWN_SECONDS = 300  # 5 minutes cooldown per attacker-target pair
+BOT_USERNAME = "slapchampai"           # lowercase!
+COOLDOWN_SECONDS = 300
 
-# Tenor slap GIFs (10 links – add more anytime)
 SLAP_GIFS = [
     "https://tenor.com/view/slap-hard-slap-gif-22345678",
     "https://tenor.com/view/will-smith-slap-chris-rock-gif-25141873",
@@ -24,7 +23,6 @@ SLAP_GIFS = [
     "https://tenor.com/view/destroyed-slap-gif-11223344"
 ]
 
-# Cooldown storage (file-based – survives restarts)
 COOLDOWN_FILE = "cooldowns.json"
 
 def load_cooldowns():
@@ -39,7 +37,7 @@ def save_cooldowns(cooldowns):
 
 cooldowns = load_cooldowns()
 
-# ── X API SETUP ─────────────────────────────────────────────────────────
+# ── X API ───────────────────────────────────────────────────────────────
 client = tweepy.Client(
     bearer_token=os.getenv('BEARER_TOKEN'),
     consumer_key=os.getenv('CONSUMER_KEY'),
@@ -50,49 +48,45 @@ client = tweepy.Client(
 )
 
 me = client.get_me().data
-print(f"Connected as @{me.username} — Nuclear Slap Bot LIVE 🔥")
+print(f"Connected as @{me.username} — SlapchampAI LIVE 🔥")
 
-# ── GROK API ROAST GENERATOR ────────────────────────────────────────────
+# ── GROK ROAST ──────────────────────────────────────────────────────────
 def generate_nuclear_roast(target_username, attacker_username, bio_snippet="", pfp_desc=""):
     url = "https://api.x.ai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {os.getenv('GROK_API_KEY')}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {os.getenv('GROK_API_KEY')}",
+               "Content-Type": "application/json"}
 
     prompt = f"""
-    You are Grok — nuclear destruction roast mode. Be brutally savage, hilarious, chaotic.
+    You are Grok — nuclear roast mode. Brutally savage, hilarious, chaotic.
     NO slurs, threats, racism, or ban-worthy content.
     Target: @{target_username}
     Bio snippet: {bio_snippet or 'none'}
-    PFP description: {pfp_desc or 'unknown'}
+    PFP: {pfp_desc or 'unknown'}
     Attacker: @{attacker_username}
-    ONE short, direct, devastating sentence only.
+    ONE short devastating sentence only.
     End with 1-2 savage emojis.
     """
 
     payload = {
-        "model": "grok-4",          # or "grok-beta" / "grok-4.1-fast" – check console
+        "model": "grok-4",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 1.0,
-        "max_tokens": 60            # forces short output
+        "max_tokens": 60
     }
 
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=10)
         r.raise_for_status()
-        roast = r.json()['choices'][0]['message']['content'].strip()
-        return roast
+        return r.json()['choices'][0]['message']['content'].strip()
     except Exception as e:
-        print("Grok API error:", e)
-        return f"@{target_username} just got obliterated into next week 💀🔥"  # fallback
+        print("Grok error:", e)
+        return f"@{target_username} just got erased from existence 💀🔥"
 
-# ── MAIN LOOP ────────────────────────────────────────────────────────────
-print("Nuclear Slap Bot polling pure @user slap mentions...")
+# ── LOOP ────────────────────────────────────────────────────────────────
+print("SlapchampAI polling pure @user slap...")
 
 while True:
     try:
-        # Search for any @mention + "slap" (pure trigger)
         tweets = client.search_recent_tweets(
             query='"@* slap" -is:retweet lang:en',
             max_results=20,
@@ -102,68 +96,49 @@ while True:
         )
 
         if not tweets.data:
-            print("No new slap mentions – sleeping 60s")
+            print("No slaps – sleep 60s")
             time.sleep(60)
             continue
 
         for tweet in tweets.data:
             author_id = tweet.author_id
-            if author_id == me.id:
-                continue
+            if author_id == me.id: continue
 
             text = tweet.text.lower()
-            if "slap" not in text:
-                continue
+            if "slap" not in text: continue
 
-            # Get first @mention as target
-            mentions_entities = tweet.entities.get("mentions", [])
-            if not mentions_entities:
-                continue
+            mentions = tweet.entities.get("mentions", [])
+            if not mentions: continue
 
-            target_mention = mentions_entities[0]
-            target_username = target_mention["username"]
+            target = mentions[0]["username"]
+            if target.lower() == BOT_USERNAME: continue
 
-            # Skip if trying to slap the bot itself
-            if target_username.lower() == BOT_USERNAME.lower():
-                continue
-
-            # Cooldown check
-            now = datetime.utcnow()
-            cooldown_key = f"{author_id}_{target_username}"
-            last_use_str = cooldowns.get(cooldown_key)
-            if last_use_str:
-                last_use = datetime.fromisoformat(last_use_str)
-                if now - last_use < timedelta(seconds=COOLDOWN_SECONDS):
-                    print(f"Cooldown active for {target_username}")
+            now = datetime.now(timezone.utc)
+            key = f"{author_id}_{target}"
+            last = cooldowns.get(key)
+            if last:
+                last_dt = datetime.fromisoformat(last)
+                if now - last_dt < timedelta(seconds=COOLDOWN_SECONDS):
+                    print(f"Cooldown for {target}")
                     continue
 
-            # Update cooldown
-            cooldowns[cooldown_key] = now.isoformat()
+            cooldowns[key] = now.isoformat()
             save_cooldowns(cooldowns)
 
-            # Get target user info
-            target_user = client.get_user(username=target_username, user_fields=["description", "profile_image_url"]).data
-            bio_snippet = target_user.description[:60] if target_user.description else ""
-            pfp_desc = "unknown"  # add detection later if wanted
+            user = client.get_user(username=target, user_fields=["description", "profile_image_url"]).data
+            bio = user.description[:60] if user.description else ""
+            pfp = "unknown"
 
-            # Generate roast
-            roast = generate_nuclear_roast(target_username, tweet.author.username, bio_snippet, pfp_desc)
-
+            roast = generate_nuclear_roast(target, tweet.author.username, bio, pfp)
             gif = random.choice(SLAP_GIFS)
 
-            # Reply with promo
-            reply_text = f"@{target_username} {roast}\n\n{gif}\n" \
-                         f"Slapped by @{tweet.author.username} — Powered by @dirtyslapbot 🔥"
+            reply = f"@{target} {roast}\n\n{gif}\nSlapped by @{tweet.author.username} — Powered by @slapchampai 🔥"
 
-            client.create_tweet(
-                in_reply_to_tweet_id=tweet.id,
-                text=reply_text
-            )
-
-            print(f"Pure slap nuked @{target_username} by @{tweet.author.username}")
+            client.create_tweet(in_reply_to_tweet_id=tweet.id, text=reply)
+            print(f"Nuked @{target}")
 
         time.sleep(60)
 
     except Exception as e:
-        print("Loop error:", e)
+        print("Error:", e)
         time.sleep(60)
