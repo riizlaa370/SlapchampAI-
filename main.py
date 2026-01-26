@@ -71,8 +71,8 @@ cooldowns = load_cooldowns()
 # ── X API SETUP ─────────────────────────────────────────────────────────
 client = tweepy.Client(
     bearer_token=os.getenv('BEARER_TOKEN'),
-    consumer_key=os.getenv('CONSUMER_KEY'),
-    consumer_secret=os.getenv('CONSUMER_SECRET'),
+    consumer_key=os.getenv("TWITTER_API_KEY"),
+    consumer_secret=os.getenv("TWITTER_API_SECRET"),
     access_token=os.getenv('ACCESS_TOKEN'),
     access_token_secret=os.getenv('ACCESS_TOKEN_SECRET'),
     wait_on_rate_limit=True
