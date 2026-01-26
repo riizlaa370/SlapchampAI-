@@ -1,16 +1,26 @@
 import os
 import sys
+import tweepy
+import random
+import time
+import json
+import requests
+from datetime import datetime, timezone, timedelta
 
+# ────────────────────────────────────────────────
+#  Debug: Show which environment variables we see
+# ────────────────────────────────────────────────
 print("=== ENV DEBUG START ===", file=sys.stderr)
+
 keys_we_care_about = [
     "TWITTER_API_KEY",
     "TWITTER_API_SECRET",
-    "TWITTER_CONSUMER_KEY",
-    "TWITTER_CONSUMER_SECRET",
     "TWITTER_ACCESS_TOKEN",
     "TWITTER_ACCESS_TOKEN_SECRET",
     "TWITTER_BEARER_TOKEN",
-    "API_KEY", "CONSUMER_KEY", "ACCESS_TOKEN"  # common alternatives
+    "TWITTER_CONSUMER_KEY",
+    "TWITTER_CONSUMER_SECRET",
+    "GROK_API_KEY",          # for xAI Grok API
 ]
 
 for key in keys_we_care_about:
@@ -20,27 +30,21 @@ for key in keys_we_care_about:
     else:
         print(f"{key}: MISSING / None", file=sys.stderr)
 
-print("Full TWITTER* vars:", file=sys.stderr)
-for k, v in os.environ.items():
-    if k.upper().startswith("TWITTER") or "OAUTH" in k.upper():
+print("\nFull TWITTER* & GROK* vars:", file=sys.stderr)
+for k, v in sorted(os.environ.items()):
+    if k.upper().startswith("TWITTER") or k.upper().startswith("GROK") or "OAUTH" in k.upper():
         print(f"  {k} = {v[:10]}...", file=sys.stderr)
 
 print("=== ENV DEBUG END ===", file=sys.stderr)
 
-# ← rest of your code continues here
-import os
-import tweepy
-import random
-import time
-import json
-import requests
-from datetime import datetime, timezone, timedelta
-
-# ── CONFIG ──────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────
+#  CONFIG
+# ────────────────────────────────────────────────
 BOT_USERNAME = "slapchampai"           # lowercase, no @
-COOLDOWN_SECONDS = 300                 # 5 min per attacker-target pair
+COOLDOWN_SECONDS = 300                 # 5 minutes per attacker-target pair
+COOLDOWN_FILE = "cooldowns.json"
 
-# Tenor slap GIFs (10 safe, high-quality)
+# Tenor slap GIFs (safe & funny)
 SLAP_GIFS = [
     "https://tenor.com/view/slap-hard-slap-gif-22345678",
     "https://tenor.com/view/will-smith-slap-chris-rock-gif-25141873",
@@ -54,140 +58,195 @@ SLAP_GIFS = [
     "https://tenor.com/view/destroyed-slap-gif-11223344"
 ]
 
-COOLDOWN_FILE = "cooldowns.json"
-
+# ────────────────────────────────────────────────
+#  Cooldown helpers
+# ────────────────────────────────────────────────
 def load_cooldowns():
     if os.path.exists(COOLDOWN_FILE):
-        with open(COOLDOWN_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(COOLDOWN_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return {}
     return {}
 
 def save_cooldowns(cooldowns):
-    with open(COOLDOWN_FILE, "w") as f:
-        json.dump(cooldowns, f)
+    try:
+        with open(COOLDOWN_FILE, "w") as f:
+            json.dump(cooldowns, f, indent=2)
+    except Exception as e:
+        print(f"Failed to save cooldowns: {e}", file=sys.stderr)
 
 cooldowns = load_cooldowns()
 
-# ── X API SETUP ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────
+#  Twitter/X Client – OAuth 1.0a USER CONTEXT
+# ────────────────────────────────────────────────
+consumer_key    = os.getenv("TWITTER_API_KEY") or os.getenv("TWITTER_CONSUMER_KEY")
+consumer_secret = os.getenv("TWITTER_API_SECRET") or os.getenv("TWITTER_CONSUMER_SECRET")
+access_token    = os.getenv("TWITTER_ACCESS_TOKEN")
+access_token_secret = os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
+
+missing = [k for k, v in {
+    "consumer_key": consumer_key,
+    "consumer_secret": consumer_secret,
+    "access_token": access_token,
+    "access_token_secret": access_token_secret
+}.items() if not v]
+
+if missing:
+    print("CRITICAL: Missing Twitter credentials:", ", ".join(missing), file=sys.stderr)
+    sys.exit(1)
+
 client = tweepy.Client(
-    bearer_token=os.getenv('BEARER_TOKEN'),
-    consumer_key=os.getenv("TWITTER_API_KEY"),
-    consumer_secret=os.getenv("TWITTER_API_SECRET"),
-    access_token=os.getenv('ACCESS_TOKEN'),
-    access_token_secret=os.getenv('ACCESS_TOKEN_SECRET'),
-    wait_on_rate_limit=True,
-     # Forces OAuth 1.0a User Context instead of App-Only
+    consumer_key=consumer_key,
+    consumer_secret=consumer_secret,
+    access_token=access_token,
+    access_token_secret=access_token_secret,
+    wait_on_rate_limit=True
 )
 
-me = client.get_me().data
-print(f"Connected as @{me.username} — SlapchampAI LIVE 🔥")
+# Verify connection
+try:
+    me = client.get_me(user_auth=True).data
+    print(f"Connected as @{me.username} — SlapchampAI LIVE 🔥", file=sys.stderr)
+except Exception as e:
+    print(f"Authentication failed: {e}", file=sys.stderr)
+    sys.exit(1)
 
-# ── GROK ROAST GENERATOR ────────────────────────────────────────────────
+# ────────────────────────────────────────────────
+#  Grok Roast Generator (xAI API)
+# ────────────────────────────────────────────────
 def generate_nuclear_roast(target_username, attacker_username, bio_snippet="", pfp_desc=""):
+    grok_key = os.getenv("GROK_API_KEY")
+    if not grok_key:
+        print("WARNING: GROK_API_KEY missing → using fallback roast", file=sys.stderr)
+        return f"@{target_username} just got atomized into another dimension 💀☢️"
+
     url = "https://api.x.ai/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {os.getenv('GROK_API_KEY')}",
+        "Authorization": f"Bearer {grok_key}",
         "Content-Type": "application/json"
     }
 
     prompt = f"""
-    You are Grok — nuclear destruction roast mode. Be brutally savage, hilarious, chaotic.
-    NO slurs, threats, racism, or ban-worthy content.
-    Target: @{target_username}
-    Bio snippet: {bio_snippet or 'none'}
-    PFP description: {pfp_desc or 'unknown'}
-    Attacker: @{attacker_username}
-    ONE short, direct, devastating sentence only.
-    End with 1-2 savage emojis.
-    """
+You are Grok — nuclear roast mode. Be brutally savage, hilarious, chaotic.
+Rules: NO slurs, NO threats, NO racism, NO ban-worthy content.
+Target: @{target_username}
+Bio snippet: {bio_snippet or 'none'}
+PFP description: {pfp_desc or 'unknown'}
+Attacker: @{attacker_username}
+Output: ONE short, devastating sentence only.
+End with 1-2 savage emojis.
+"""
 
     payload = {
-        "model": "grok-4",
+        "model": "grok-beta",           # or "grok-4" if available in 2026
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 1.0,
-        "max_tokens": 60
+        "max_tokens": 80
     }
 
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=10)
+        r = requests.post(url, headers=headers, json=payload, timeout=12)
         r.raise_for_status()
         return r.json()['choices'][0]['message']['content'].strip()
     except Exception as e:
-        print("Grok API error:", e)
-        return f"@{target_username} just got obliterated into next week 💀🔥"
+        print(f"Grok API error: {e}", file=sys.stderr)
+        return f"@{target_username} got deleted from existence 💥😈"
 
-# ── MAIN LOOP ────────────────────────────────────────────────────────────
-print("SlapchampAI polling mentions with 'slap' intent...")
+# ────────────────────────────────────────────────
+#  Main Loop – Poll mentions
+# ────────────────────────────────────────────────
+print("SlapchampAI is now polling mentions...", file=sys.stderr)
 
 while True:
     try:
+        # Search for recent mentions with "slap"
         tweets = client.search_recent_tweets(
             query=f"@{BOT_USERNAME} slap -is:retweet lang:en",
-            max_results=20,
-            tweet_fields=["author_id", "entities", "created_at"],
+            max_results=10,                     # small batch to stay safe
+            tweet_fields=["author_id", "entities", "created_at", "id"],
             expansions=["author_id"],
             user_fields=["username", "description", "profile_image_url"]
         )
 
         if not tweets.data:
-            print("No new slaps – sleep 60s")
+            print("No new slaps — sleeping 60s", file=sys.stderr)
             time.sleep(60)
             continue
 
         for tweet in tweets.data:
             author_id = tweet.author_id
             if author_id == me.id:
-                continue
+                continue  # skip self-replies
 
             text = tweet.text.lower()
             if "slap" not in text:
                 continue
 
-            # Get mentions — bot is first, target is second (or more)
-            mentions_entities = tweet.entities.get("mentions", [])
-            if len(mentions_entities) < 2:
-                continue  # Need at least bot + one target
+            # Extract mentions (first should be bot, second = target)
+            mentions = tweet.entities.get("mentions", [])
+            if len(mentions) < 2:
+                continue
 
-            # Target is the second mention (first is bot)
-            target_username = mentions_entities[1]["username"]
+            target_username = mentions[1]["username"]
 
             # Cooldown check
             now = datetime.now(timezone.utc)
-            cooldown_key = f"{author_id}_{target_username}"
-            last_use_str = cooldowns.get(cooldown_key)
-            if last_use_str:
-                last_use = datetime.fromisoformat(last_use_str)
-                if now - last_use < timedelta(seconds=COOLDOWN_SECONDS):
-                    print(f"Cooldown active for {target_username}")
+            key = f"{author_id}_{target_username}"
+            last = cooldowns.get(key)
+            if last:
+                last_time = datetime.fromisoformat(last)
+                if now - last_time < timedelta(seconds=COOLDOWN_SECONDS):
+                    print(f"Cooldown active for {target_username}", file=sys.stderr)
                     continue
 
             # Update cooldown
-            cooldowns[cooldown_key] = now.isoformat()
+            cooldowns[key] = now.isoformat()
             save_cooldowns(cooldowns)
 
-            # Get target info
-            target_user = client.get_user(username=target_username, user_fields=["description", "profile_image_url"]).data
-            bio_snippet = target_user.description[:60] if target_user.description else ""
+            # Get target user info
+            target = client.get_user(username=target_username,
+                                    user_fields=["description", "profile_image_url"]).data
+
+            bio_snippet = target.description[:80] if target and target.description else ""
             pfp_desc = "unknown"
 
             # Generate roast
-            roast = generate_nuclear_roast(target_username, tweet.author.username, bio_snippet, pfp_desc)
+            roast = generate_nuclear_roast(
+                target_username,
+                tweet.author.username if tweets.includes and 'users' in tweets.includes else "someone",
+                bio_snippet,
+                pfp_desc
+            )
 
             gif = random.choice(SLAP_GIFS)
 
-            # Reply with short "Powered by Grok" branding
-            reply_text = f"@{target_username} {roast}\n\n{gif}\n" \
-                         f"Slapped by @{tweet.author.username} — Powered by Grok 🔥"
-
-            client.create_tweet(
-                in_reply_to_tweet_id=tweet.id,
-                text=reply_text
+            # Build reply
+            reply_text = (
+                f"@{target_username} {roast}\n\n"
+                f"{gif}\n"
+                f"Slapped by @{tweet.author.username} — Powered by Grok 🔥"
             )
 
-            print(f"Nuked @{target_username} by @{tweet.author.username}")
+            # Post reply
+            client.create_tweet(
+                text=reply_text,
+                in_reply_to_tweet_id=tweet.id
+            )
+
+            print(f"Slapped @{target_username} by @{tweet.author.username}", file=sys.stderr)
 
         time.sleep(60)
 
+    except tweepy.TweepyException as te:
+        print(f"Tweepy error: {te}", file=sys.stderr)
+        if hasattr(te, 'response') and te.response:
+            print(f"Status: {te.response.status_code}", file=sys.stderr)
+            print(f"Body: {te.response.text[:400]}...", file=sys.stderr)
+        time.sleep(60)
+
     except Exception as e:
-        print("Loop error:", e)
+        print(f"Unexpected loop error: {e}", file=sys.stderr)
         time.sleep(60)
