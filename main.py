@@ -80,19 +80,18 @@ def save_cooldowns(cooldowns):
 cooldowns = load_cooldowns()
 
 # ────────────────────────────────────────────────
-#  Twitter/X Client – OAuth 1.0a USER CONTEXT
+# Twitter/X Client – OAuth 1.0a USER CONTEXT ONLY
 # ────────────────────────────────────────────────
 consumer_key    = os.getenv("TWITTER_API_KEY") or os.getenv("TWITTER_CONSUMER_KEY")
 consumer_secret = os.getenv("TWITTER_API_SECRET") or os.getenv("TWITTER_CONSUMER_SECRET")
 access_token    = os.getenv("TWITTER_ACCESS_TOKEN")
 access_token_secret = os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
 
-missing = [k for k, v in {
-    "consumer_key": consumer_key,
-    "consumer_secret": consumer_secret,
-    "access_token": access_token,
-    "access_token_secret": access_token_secret
-}.items() if not v]
+missing = []
+if not consumer_key:    missing.append("TWITTER_API_KEY / CONSUMER_KEY")
+if not consumer_secret: missing.append("TWITTER_API_SECRET / CONSUMER_SECRET")
+if not access_token:    missing.append("TWITTER_ACCESS_TOKEN")
+if not access_token_secret: missing.append("TWITTER_ACCESS_TOKEN_SECRET")
 
 if missing:
     print("CRITICAL: Missing Twitter credentials:", ", ".join(missing), file=sys.stderr)
@@ -104,14 +103,21 @@ client = tweepy.Client(
     access_token=access_token,
     access_token_secret=access_token_secret,
     wait_on_rate_limit=True
+    # IMPORTANT: Do NOT add bearer_token=... here — it breaks user context
 )
 
-# Verify connection
+# Verify connection with explicit user auth
 try:
     me = client.get_me(user_auth=True).data
     print(f"Connected as @{me.username} — SlapchampAI LIVE 🔥", file=sys.stderr)
+except tweepy.TweepyException as e:
+    print(f"Connection failed: {e}", file=sys.stderr)
+    if hasattr(e, 'response') and e.response:
+        print(f"Status: {e.response.status_code}", file=sys.stderr)
+        print(f"Body: {e.response.text[:400]}...", file=sys.stderr)
+    sys.exit(1)
 except Exception as e:
-    print(f"Authentication failed: {e}", file=sys.stderr)
+    print(f"Unexpected error during auth: {e}", file=sys.stderr)
     sys.exit(1)
 
 # ────────────────────────────────────────────────
