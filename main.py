@@ -30,7 +30,7 @@ for k, v in sorted(os.environ.items()):
     if k.upper().startswith("TWITTER") or k.upper().startswith("GROK") or "OAUTH" in k.upper():
         print(f"  {k} = {v[:10]}...", file=sys.stderr)
 
-print("=== ENV DEBUG END ===", file=sys.stderr)
+print("=== ENV DEBUG START ===", file=sys.stderr)
 
 # ────────────────────────────────────────────────
 #  CONFIG
@@ -45,7 +45,7 @@ SLAP_GIFS = [  # your list, unchanged
 ]
 
 # ────────────────────────────────────────────────
-#  Cooldown helpers (unchanged, already good)
+#  Cooldown helpers (unchanged)
 # ────────────────────────────────────────────────
 def load_cooldowns():
     if os.path.exists(COOLDOWN_FILE):
@@ -68,10 +68,18 @@ cooldowns = load_cooldowns()
 # ────────────────────────────────────────────────
 # Twitter/X Client – OAuth 1.0a USER CONTEXT ONLY
 # ────────────────────────────────────────────────
-consumer_key    = os.getenv("TWITTER_API_KEY") or os.getenv("TWITTER_CONSUMER_KEY")
-consumer_secret = os.getenv("TWITTER_API_SECRET") or os.getenv("TWITTER_CONSUMER_SECRET")
-access_token    = os.getenv("TWITTER_ACCESS_TOKEN")
+consumer_key        = os.getenv("TWITTER_API_KEY") or os.getenv("TWITTER_CONSUMER_KEY")
+consumer_secret     = os.getenv("TWITTER_API_SECRET") or os.getenv("TWITTER_CONSUMER_SECRET")
+access_token        = os.getenv("TWITTER_ACCESS_TOKEN")
 access_token_secret = os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
+
+# ─── Debug: Show exactly what credentials are being used ───
+print("\n=== CREDENTIALS ACTUALLY USED FOR AUTH ===", file=sys.stderr)
+print(f"consumer_key       : {'NOT_SET' if not consumer_key else consumer_key[:8] + '...'}", file=sys.stderr)
+print(f"consumer_secret    : {'NOT_SET' if not consumer_secret else 'present (' + str(len(consumer_secret)) + ' chars)'}", file=sys.stderr)
+print(f"access_token       : {'NOT_SET' if not access_token else access_token[:8] + '...'}", file=sys.stderr)
+print(f"access_token_secret: {'NOT_SET' if not access_token_secret else 'present (' + str(len(access_token_secret)) + ' chars)'}", file=sys.stderr)
+print("=======================================\n", file=sys.stderr)
 
 missing = [k for k, v in {
     "consumer_key": consumer_key,
@@ -94,13 +102,18 @@ client = tweepy.Client(
 
 # Verify connection
 try:
-    me = client.get_me().data
+    me = client.get_me(user_auth=True).data   # ← added user_auth=True (helps in some edge cases)
     print(f"Connected as @{me.username} — SlapchampAI LIVE 🔥", file=sys.stderr)
+    
+    # ─── Quick test post (remove or comment out after confirming it works) ───
+    # test_result = client.create_tweet(text="Test from SlapchampAI — please ignore")
+    # print(f"Test tweet posted successfully: {test_result.data['id']}", file=sys.stderr)
+    
 except tweepy.TweepyException as e:
-    print(f"Connection failed: {e}", file=sys.stderr)
+    print(f"Connection / auth failed: {e}", file=sys.stderr)
     if hasattr(e, 'response') and e.response:
-        print(f"Status: {e.response.status_code}", file=sys.stderr)
-        print(f"Body: {e.response.text[:400]}...", file=sys.stderr)
+        print(f"Status code: {e.response.status_code}", file=sys.stderr)
+        print(f"Response body: {e.response.text}", file=sys.stderr)   # full body — very helpful
     sys.exit(1)
 
 # ────────────────────────────────────────────────
@@ -181,16 +194,16 @@ while True:
             # ─── POST REPLY ───
             try:
                 print(f"Posting reply to tweet {tweet.id} as @{me.username}", file=sys.stderr)
-                client.create_tweet(
+                response = client.create_tweet(
                     text=reply_text,
                     in_reply_to_tweet_id=tweet.id
                 )
-                print(f"Successfully slapped @{target_username}", file=sys.stderr)
+                print(f"Successfully slapped @{target_username} — tweet id: {response.data['id']}", file=sys.stderr)
             except tweepy.TweepyException as te:
                 print(f"Reply failed: {te}", file=sys.stderr)
                 if hasattr(te, 'response') and te.response:
                     print(f"Status: {te.response.status_code}", file=sys.stderr)
-                    print(f"Response body: {te.response.text[:600]}...", file=sys.stderr)
+                    print(f"Full response body: {te.response.text}", file=sys.stderr)  # ← this is key
             except Exception as e:
                 print(f"Unexpected reply error: {e}", file=sys.stderr)
 
