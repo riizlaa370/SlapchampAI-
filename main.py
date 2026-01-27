@@ -192,21 +192,19 @@ while True:
             )
 
             # ─── POST REPLY ───
-            try:
-                print(f"Posting reply to tweet {tweet.id} as @{me.username}", file=sys.stderr)
-                response = client.create_tweet(
-                    text=reply_text,
-                    in_reply_to_tweet_id=tweet.id
-                )
-                print(f"Successfully slapped @{target_username} — tweet id: {response.data['id']}", file=sys.stderr)
-            except tweepy.TweepyException as te:
-                print(f"Reply failed: {te}", file=sys.stderr)
-                if hasattr(te, 'response') and te.response:
-                    print(f"Status: {te.response.status_code}", file=sys.stderr)
-                    print(f"Full response body: {te.response.text}", file=sys.stderr)  # ← this is key
-            except Exception as e:
-                print(f"Unexpected reply error: {e}", file=sys.stderr)
-
+         try:
+    print(f"Posting reply to tweet {tweet.id} as @{me.username}", file=sys.stderr)
+    response = client.create_tweet(
+        text=reply_text,
+        in_reply_to_tweet_id=tweet.id,
+        user_auth=True   # ← add this line
+    )
+    print(f"Successfully slapped @{target_username} — tweet id: {response.data['id']}", file=sys.stderr)
+except tweepy.TweepyException as te:
+    print(f"Reply failed: {te}", file=sys.stderr)
+    if hasattr(te, 'response') and te.response:
+        print(f"Status: {te.response.status_code}", file=sys.stderr)
+        print(f"Full response body: {te.response.text}", file=sys.stderr)  # keep this — paste next logs
         time.sleep(60)
 
     except tweepy.TweepyException as te:
