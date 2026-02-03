@@ -70,10 +70,30 @@ client = tweepy.Client(
     wait_on_rate_limit=True
 )
 
-# Verify auth
+# Verify auth + ONE-TIME TEST POST
 try:
     me = client.get_me(user_auth=True).data
     print(f"Connected as @{me.username}", file=sys.stderr)
+
+    # ─── ONE-TIME TEST POST TO CONFIRM WRITE ACCESS ───
+    # This runs only once per startup/redeploy
+    print("Running one-time write test...", file=sys.stderr)
+    try:
+        test_response = client.create_tweet(
+            text="Test write from SlapchampAI – please ignore this #debug",
+            user_auth=True
+        )
+        print(f"TEST POST SUCCESS – Tweet ID: {test_response.data['id']}", file=sys.stderr)
+    except tweepy.TweepyException as te:
+        print(f"TEST POST FAILED: {te}", file=sys.stderr)
+        print(f"Status code: {te.response.status_code if hasattr(te, 'response') and te.response else 'N/A'}", file=sys.stderr)
+        if hasattr(te, 'response') and te.response:
+            print(f"Full response body: {te.response.text}", file=sys.stderr)
+        else:
+            print("No detailed response body available", file=sys.stderr)
+    except Exception as e:
+        print(f"TEST POST UNEXPECTED ERROR: {e}", file=sys.stderr)
+
 except Exception as e:
     print(f"Auth failed: {e}", file=sys.stderr)
     sys.exit(1)
@@ -97,16 +117,15 @@ From: @{attacker_username}
         response = grok_client.chat.completions.create(
             model="grok-beta",           # or grok-3-mini-beta if available & cheaper
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=70,               # very cheap
+            max_tokens=70,
             temperature=0.9,
         )
 
         roast = response.choices[0].message.content.strip()
-        return roast[:190]               # safety cap
+        return roast[:190]
 
     except Exception as e:
         print(f"Grok API error: {e}", file=sys.stderr)
-        # fallback
         return f"@{target_username} your vibe is straight landfill. Roasted. 🔥"
 
 # ────────────────────────────────────────────────
