@@ -22,7 +22,7 @@ SLAP_GIFS = [
 ]
 
 # ────────────────────────────────────────────────
-# Grok API client (created once)
+# Grok API client
 # ────────────────────────────────────────────────
 grok_client = OpenAI(
     api_key=os.getenv("GROK_API_KEY"),
@@ -51,55 +51,65 @@ def save_cooldowns(cooldowns):
 cooldowns = load_cooldowns()
 
 # ────────────────────────────────────────────────
-# X Client setup
+# X OAuth 2.0 User Context Setup with Refresh
 # ────────────────────────────────────────────────
-consumer_key = os.getenv("TWITTER_API_KEY") or os.getenv("TWITTER_CONSUMER_KEY")
-consumer_secret = os.getenv("TWITTER_API_SECRET") or os.getenv("TWITTER_CONSUMER_SECRET")
-access_token = os.getenv("TWITTER_ACCESS_TOKEN")
-access_token_secret = os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
+client_id = os.getenv("TWITTER_CLIENT_ID")  # Your OAuth 2.0 Client ID from developer portal
+refresh_token = os.getenv("TWITTER_REFRESH_TOKEN")
 
-if not all([consumer_key, consumer_secret, access_token, access_token_secret]):
-    print("Missing Twitter credentials", file=sys.stderr)
+if not client_id or not refresh_token:
+    print("Missing TWITTER_CLIENT_ID or TWITTER_REFRESH_TOKEN in environment variables", file=sys.stderr)
     sys.exit(1)
 
+# OAuth 2.0 User Handler
+oauth2_handler = tweepy.OAuth2UserHandler(
+    client_id=client_id,
+    redirect_uri="http://127.0.0.1",  # Must match one of your app's registered callbacks
+    scope=["tweet.read", "tweet.write", "users.read", "offline.access"]
+)
+
+# Refresh access token using stored refresh_token
+try:
+    token_response = oauth2_handler.refresh_token(refresh_token)
+    access_token = token_response["access_token"]
+    # Optional: save new refresh_token if it rotated
+    if "refresh_token" in token_response:
+        refresh_token = token_response["refresh_token"]
+        print("Refresh token updated", file=sys.stderr)
+    print("Access token refreshed successfully", file=sys.stderr)
+except tweepy.TweepyException as e:
+    print(f"Refresh token failed: {e}", file=sys.stderr)
+    print(f"Full error: {e.response.text if hasattr(e, 'response') else 'No details'}", file=sys.stderr)
+    sys.exit(1)
+
+# Create Tweepy Client with refreshed user access token
 client = tweepy.Client(
-    consumer_key=consumer_key,
-    consumer_secret=consumer_secret,
-    access_token=access_token,
-    access_token_secret=access_token_secret,
+    bearer_token=access_token,  # This is the refreshed OAuth 2.0 access token
     wait_on_rate_limit=True
 )
 
 # Verify auth + ONE-TIME TEST POST
 try:
-    me = client.get_me(user_auth=True).data
-    print(f"Connected as @{me.username}", file=sys.stderr)
+    me = client.get_me().data
+    print(f"Connected as @{me.username} with OAuth 2.0 user context", file=sys.stderr)
 
-    # ─── ONE-TIME TEST POST TO CONFIRM WRITE ACCESS ───
-    # This runs only once per startup/redeploy
+    # ONE-TIME TEST POST TO CONFIRM WRITE ACCESS
     print("Running one-time write test...", file=sys.stderr)
     try:
         test_response = client.create_tweet(
-            text="Test write from SlapchampAI – please ignore this #debug",
-            user_auth=True
+            text="Test write from SlapchampAI – please ignore this #debug"
         )
         print(f"TEST POST SUCCESS – Tweet ID: {test_response.data['id']}", file=sys.stderr)
     except tweepy.TweepyException as te:
         print(f"TEST POST FAILED: {te}", file=sys.stderr)
-        print(f"Status code: {te.response.status_code if hasattr(te, 'response') and te.response else 'N/A'}", file=sys.stderr)
         if hasattr(te, 'response') and te.response:
-            print(f"Full response body: {te.response.text}", file=sys.stderr)
-        else:
-            print("No detailed response body available", file=sys.stderr)
-    except Exception as e:
-        print(f"TEST POST UNEXPECTED ERROR: {e}", file=sys.stderr)
-
+            print(f"Status code: {te.response.status_code}", file=sys.stderr)
+            print(f"Full response: {te.response.text}", file=sys.stderr)
 except Exception as e:
-    print(f"Auth failed: {e}", file=sys.stderr)
+    print(f"Auth or test failed: {e}", file=sys.stderr)
     sys.exit(1)
 
 # ────────────────────────────────────────────────
-# Real Grok roast generator - low cost
+# Real Grok roast generator
 # ────────────────────────────────────────────────
 def generate_nuclear_roast(target_username, attacker_username, bio_snippet=""):
     if not grok_client.api_key:
@@ -115,7 +125,7 @@ From: @{attacker_username}
 """.strip()
 
         response = grok_client.chat.completions.create(
-            model="grok-beta",           # or grok-3-mini-beta if available & cheaper
+            model="grok-beta",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=70,
             temperature=0.9,
@@ -129,13 +139,14 @@ From: @{attacker_username}
         return f"@{target_username} your vibe is straight landfill. Roasted. 🔥"
 
 # ────────────────────────────────────────────────
-# Main loop
+# Main polling loop
 # ────────────────────────────────────────────────
 print("Polling started", file=sys.stderr)
-since_id = 1
+since_id = 1  # Will be updated from mentions
 
 while True:
     try:
+        # Use OAuth 2.0 user context to search mentions
         tweets = client.search_recent_tweets(
             query=f"@{BOT_USERNAME} slap -is:retweet lang:en",
             max_results=5,
@@ -189,15 +200,24 @@ while True:
                 try:
                     resp = client.create_tweet(
                         text=reply_text,
-                        in_reply_to_tweet_id=tweet.id,
-                        user_auth=True
+                        in_reply_to_tweet_id=tweet.id
                     )
-                    print(f"Slapped @{target_username}", file=sys.stderr)
-                except Exception as e:
+                    print(f"Slapped @{target_username} - Reply ID: {resp.data['id']}", file=sys.stderr)
+                except tweepy.TweepyException as e:
                     print(f"Reply failed: {e}", file=sys.stderr)
+                    if hasattr(e, 'response') and e.response:
+                        print(f"Status: {e.response.status_code} | Body: {e.response.text}", file=sys.stderr)
 
         time.sleep(POLL_INTERVAL)
 
+    except tweepy.TooManyRequests:
+        print("Rate limit hit - sleeping 15 min", file=sys.stderr)
+        time.sleep(900)
+    except tweepy.TweepyException as e:
+        print(f"Loop error (Tweepy): {e}", file=sys.stderr)
+        if hasattr(e, 'response') and e.response:
+            print(f"Status: {e.response.status_code} | Body: {e.response.text}", file=sys.stderr)
+        time.sleep(180)
     except Exception as e:
-        print(f"Loop error: {e}", file=sys.stderr)
+        print(f"Unexpected loop error: {e}", file=sys.stderr)
         time.sleep(180)
