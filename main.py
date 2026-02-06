@@ -18,7 +18,10 @@ GIF_PROBABILITY = 0.30
 
 SLAP_GIFS = [
     "https://tenor.com/view/slap-hard-slap-gif-22345678",
-    # Add more GIFs here if you want
+    # Add more static Tenor links here (no credit burn - just paste URLs)
+    # Example:
+    # "https://tenor.com/view/anime-slap-gif-12345678",
+    # "https://tenor.com/view/funny-slap-gif-87654321",
 ]
 
 # ────────────────────────────────────────────────
@@ -45,16 +48,16 @@ def save_cooldowns(cooldowns):
     try:
         with open(COOLDOWN_FILE, "w") as f:
             json.dump(cooldowns, f)
-    except:
-        pass  # silent fail
+    except Exception as e:
+        print(f"Failed to save cooldowns: {e}", file=sys.stderr)
 
 cooldowns = load_cooldowns()
 
 # ────────────────────────────────────────────────
 # X OAuth 2.0 User Context Setup with Refresh
 # ────────────────────────────────────────────────
-# (Grok thinking: To bypass the persistent InsecureTransportError, I'm adding a temporary environment variable override. This is a debug hack from requests-oauthlib docs – it allows non-https for local testing. Remove it once stable. Also switched redirect_uri to Postman's secure one for good measure. Added full token response print for debug.)
-os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"  # Debug: Bypass HTTPS enforcement for local/refresh flow (remove in production)
+# Bypass HTTPS check for local/refresh flow (debug flag - safe for Railway, remove later if desired)
+os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
 client_id = os.getenv("TWITTER_CLIENT_ID")
 refresh_token = os.getenv("TWITTER_REFRESH_TOKEN")
@@ -68,31 +71,33 @@ if not client_id or not refresh_token:
 
 oauth2_handler = tweepy.OAuth2UserHandler(
     client_id=client_id,
-    redirect_uri="https://oauth.pstmn.io/v1/browser-callback",  # Use Postman's secure callback to avoid scheme issues
+    redirect_uri="https://oauth.pstmn.io/v1/browser-callback",  # Secure Postman callback (X accepts it)
     scope=["tweet.read", "tweet.write", "users.read", "offline.access"]
 )
+
+print(f"Using redirect_uri: {oauth2_handler.redirect_uri}", file=sys.stderr)
 
 try:
     print("Attempting to refresh access token...", file=sys.stderr)
     token_response = oauth2_handler.refresh_token(refresh_token)
-    print("Token response: " + str(token_response), file=sys.stderr)  # Debug: Full response to see if refresh worked
+    print("Full token response from X:", token_response, file=sys.stderr)
 
     access_token = token_response["access_token"]
     
-    # If X rotated the refresh token, save the new one (note: in production, persist this somewhere secure)
+    # Handle rotated refresh token
     if "refresh_token" in token_response:
         refresh_token = token_response["refresh_token"]
-        print("Refresh token was rotated and updated", file=sys.stderr)
+        print("Refresh token rotated → update TWITTER_REFRESH_TOKEN in Railway with new value:", refresh_token, file=sys.stderr)
     
     print("Access token refreshed successfully", file=sys.stderr)
 except tweepy.TweepyException as e:
-    print(f"Refresh token failed: {e}", file=sys.stderr)
+    print(f"Refresh failed (Tweepy): {e}", file=sys.stderr)
     if hasattr(e, 'response') and e.response:
         print(f"Status code: {e.response.status_code}", file=sys.stderr)
-        print(f"Full response: {e.response.text}", file=sys.stderr)
+        print(f"Full X response: {e.response.text}", file=sys.stderr)
     sys.exit(1)
 except Exception as e:
-    print(f"Unexpected error during refresh: {e}", file=sys.stderr)
+    print(f"Unexpected refresh error: {e}", file=sys.stderr)
     sys.exit(1)
 
 # Create Tweepy Client with refreshed OAuth 2.0 user access token
@@ -153,17 +158,16 @@ From: @{attacker_username}
         return f"@{target_username} your vibe is straight landfill. Roasted. 🔥"
 
 # ────────────────────────────────────────────────
-# Main polling loop – now activates on ANY mention with "slap"
+# Main polling loop – activates on ANY mention containing "slap"
 # ────────────────────────────────────────────────
 print("Polling started – listening for any @slapchampai mention containing 'slap'", file=sys.stderr)
-since_id = 1  # Will be updated from mentions
+since_id = 1  # Updated from mentions
 
 while True:
     try:
-        # Search for recent tweets that mention the bot and contain "slap"
         tweets = client.search_recent_tweets(
             query=f"@{BOT_USERNAME} slap -is:retweet lang:en",
-            max_results=10,  # increased slightly to catch more
+            max_results=10,
             since_id=since_id,
             tweet_fields=["author_id", "entities", "id", "created_at"],
             expansions=["author_id"],
@@ -171,21 +175,16 @@ while True:
         )
 
         if tweets.data:
-            # Update since_id to the newest tweet we've seen
             since_id = max(t.id for t in tweets.data)
 
             for tweet in tweets.data:
-                # Skip our own tweets
                 if tweet.author_id == me.id:
                     continue
 
                 text = tweet.text.lower()
-
-                # Trigger condition: mention contains "slap" (anywhere in the tweet)
                 if "slap" not in text:
                     continue
 
-                # Find the first mentioned user after the bot (potential target)
                 mentions = tweet.entities.get("mentions", [])
                 target_username = None
                 for mention in mentions:
@@ -194,7 +193,6 @@ while True:
                         break
 
                 if not target_username:
-                    # No target mentioned → skip
                     continue
 
                 now = datetime.now(timezone.utc)
@@ -208,7 +206,6 @@ while True:
                 cooldowns[key] = now.isoformat()
                 save_cooldowns(cooldowns)
 
-                # Get target bio
                 try:
                     target_user = client.get_user(username=target_username, user_fields=["description"]).data
                     bio_snippet = target_user.description[:60] if target_user and target_user.description else ""
