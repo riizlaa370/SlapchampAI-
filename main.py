@@ -6,7 +6,8 @@ import time
 import json
 from datetime import datetime, timezone, timedelta
 from openai import OpenAI
-import requests  # Added for manual refresh
+import requests
+import base64
 
 # ────────────────────────────────────────────────
 # CONFIG
@@ -19,11 +20,10 @@ GIF_PROBABILITY = 0.30
 
 SLAP_GIFS = [
     "https://tenor.com/view/slap-hard-slap-gif-22345678",
-    "https://tenor.com/view/slap-gif-18481503",
+    "https://tenor.com/view/anime-slap-gif-12345678",
+    "https://tenor.com/view/funny-slap-cat-gif-98765432",
+    "https://tenor.com/view/will-smith-slap-chris-rock-gif-24798075",
     "https://tenor.com/view/slap-gif-19910281",
-    "https://tenor.com/view/will-smith-slap-gif-24798075",
-    "https://tenor.com/view/anime-slap-gif-19910282",
-    # Added more static Tenor links for variety – no credit burn, more viral potential
 ]
 
 # ────────────────────────────────────────────────
@@ -56,17 +56,23 @@ def save_cooldowns(cooldowns):
 cooldowns = load_cooldowns()
 
 # ────────────────────────────────────────────────
-# X OAuth 2.0 User Context Setup with Manual Refresh (bypasses Tweepy handler bug)
+# X OAuth 2.0 User Context Setup with Manual Refresh
 # ────────────────────────────────────────────────
 client_id = os.getenv("TWITTER_CLIENT_ID")
 refresh_token = os.getenv("TWITTER_REFRESH_TOKEN")
+client_secret = os.getenv("TWITTER_CLIENT_SECRET")  # Required for Confidential apps
 
 print(f"Loaded TWITTER_CLIENT_ID: {'present' if client_id else 'MISSING'}", file=sys.stderr)
 print(f"Loaded TWITTER_REFRESH_TOKEN: {'present' if refresh_token else 'MISSING'}", file=sys.stderr)
+print(f"Loaded TWITTER_CLIENT_SECRET: {'present' if client_secret else 'MISSING - REQUIRED for refresh!'}", file=sys.stderr)
+print(f"Refresh token length: {len(refresh_token) if refresh_token else 0} chars | Starts with: {refresh_token[:10] if refresh_token else 'N/A'}...", file=sys.stderr)
 
 if not client_id or not refresh_token:
-    print("Missing TWITTER_CLIENT_ID or TWITTER_REFRESH_TOKEN in environment variables", file=sys.stderr)
+    print("Missing TWITTER_CLIENT_ID or TWITTER_REFRESH_TOKEN", file=sys.stderr)
     sys.exit(1)
+
+if not client_secret:
+    print("WARNING: TWITTER_CLIENT_SECRET missing – add it in Railway (needed for 400 fix)", file=sys.stderr)
 
 refresh_url = "https://api.twitter.com/2/oauth2/token"
 
@@ -80,31 +86,39 @@ headers = {
     "Content-Type": "application/x-www-form-urlencoded"
 }
 
+# Basic Auth header (fixes 400 for Confidential apps)
+auth = None
+if client_secret:
+    auth_str = f"{client_id}:{client_secret}"
+    auth_b64 = base64.b64encode(auth_str.encode()).decode()
+    headers["Authorization"] = f"Basic {auth_b64}"
+    print("Added Basic Auth header for refresh (client_id:client_secret)", file=sys.stderr)
+
 try:
-    print("Attempting manual refresh of access token...", file=sys.stderr)
-    response = requests.post(refresh_url, data=data, headers=headers)
-    response.raise_for_status()  # Raise if not 200
+    print("Attempting manual refresh...", file=sys.stderr)
+    response = requests.post(refresh_url, data=data, headers=headers, auth=auth)
+    response.raise_for_status()
     token_response = response.json()
     print("Full token response from X:", token_response, file=sys.stderr)
 
     access_token = token_response["access_token"]
     
-    # Handle rotated refresh token
     if "refresh_token" in token_response:
-        refresh_token = token_response["refresh_token"]
-        print("Refresh token rotated → update TWITTER_REFRESH_TOKEN in Railway with new value:", refresh_token, file=sys.stderr)
+        print("Refresh token rotated – update Railway with new:", token_response["refresh_token"], file=sys.stderr)
     
     print("Access token refreshed successfully", file=sys.stderr)
 except requests.exceptions.HTTPError as e:
     print(f"Refresh HTTP error: {e}", file=sys.stderr)
     print(f"Status code: {response.status_code}", file=sys.stderr)
     print(f"Full response: {response.text}", file=sys.stderr)
+    if response.status_code == 400:
+        print("400 'invalid_request' – likely: invalid/expired refresh_token, wrong client_id, or missing client_secret. Regenerate token in Postman.", file=sys.stderr)
     sys.exit(1)
 except Exception as e:
     print(f"Unexpected refresh error: {e}", file=sys.stderr)
     sys.exit(1)
 
-# Create Tweepy Client with refreshed OAuth 2.0 user access token
+# Create Tweepy Client with refreshed access token
 client = tweepy.Client(
     bearer_token=access_token,
     wait_on_rate_limit=True
