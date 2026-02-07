@@ -6,6 +6,7 @@ import time
 import json
 from datetime import datetime, timezone, timedelta
 from openai import OpenAI
+import requests  # Added for manual refresh
 
 # ────────────────────────────────────────────────
 # CONFIG
@@ -18,10 +19,11 @@ GIF_PROBABILITY = 0.30
 
 SLAP_GIFS = [
     "https://tenor.com/view/slap-hard-slap-gif-22345678",
-    # Add more static Tenor links here (no credit burn - just paste URLs)
-    # Example:
-    # "https://tenor.com/view/anime-slap-gif-12345678",
-    # "https://tenor.com/view/funny-slap-gif-87654321",
+    "https://tenor.com/view/slap-gif-18481503",
+    "https://tenor.com/view/slap-gif-19910281",
+    "https://tenor.com/view/will-smith-slap-gif-24798075",
+    "https://tenor.com/view/anime-slap-gif-19910282",
+    # Added more static Tenor links for variety – no credit burn, more viral potential
 ]
 
 # ────────────────────────────────────────────────
@@ -54,11 +56,8 @@ def save_cooldowns(cooldowns):
 cooldowns = load_cooldowns()
 
 # ────────────────────────────────────────────────
-# X OAuth 2.0 User Context Setup with Refresh
+# X OAuth 2.0 User Context Setup with Manual Refresh (bypasses Tweepy handler bug)
 # ────────────────────────────────────────────────
-# Bypass HTTPS check for local/refresh flow (debug flag - safe for Railway, remove later if desired)
-os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
-
 client_id = os.getenv("TWITTER_CLIENT_ID")
 refresh_token = os.getenv("TWITTER_REFRESH_TOKEN")
 
@@ -69,17 +68,23 @@ if not client_id or not refresh_token:
     print("Missing TWITTER_CLIENT_ID or TWITTER_REFRESH_TOKEN in environment variables", file=sys.stderr)
     sys.exit(1)
 
-oauth2_handler = tweepy.OAuth2UserHandler(
-    client_id=client_id,
-    redirect_uri="https://oauth.pstmn.io/v1/browser-callback",  # Secure Postman callback (X accepts it)
-    scope=["tweet.read", "tweet.write", "users.read", "offline.access"]
-)
+refresh_url = "https://api.twitter.com/2/oauth2/token"
 
-print(f"Using redirect_uri: {oauth2_handler.redirect_uri}", file=sys.stderr)
+data = {
+    "refresh_token": refresh_token,
+    "grant_type": "refresh_token",
+    "client_id": client_id,
+}
+
+headers = {
+    "Content-Type": "application/x-www-form-urlencoded"
+}
 
 try:
-    print("Attempting to refresh access token...", file=sys.stderr)
-    token_response = oauth2_handler.refresh_token(refresh_token)
+    print("Attempting manual refresh of access token...", file=sys.stderr)
+    response = requests.post(refresh_url, data=data, headers=headers)
+    response.raise_for_status()  # Raise if not 200
+    token_response = response.json()
     print("Full token response from X:", token_response, file=sys.stderr)
 
     access_token = token_response["access_token"]
@@ -90,11 +95,10 @@ try:
         print("Refresh token rotated → update TWITTER_REFRESH_TOKEN in Railway with new value:", refresh_token, file=sys.stderr)
     
     print("Access token refreshed successfully", file=sys.stderr)
-except tweepy.TweepyException as e:
-    print(f"Refresh failed (Tweepy): {e}", file=sys.stderr)
-    if hasattr(e, 'response') and e.response:
-        print(f"Status code: {e.response.status_code}", file=sys.stderr)
-        print(f"Full X response: {e.response.text}", file=sys.stderr)
+except requests.exceptions.HTTPError as e:
+    print(f"Refresh HTTP error: {e}", file=sys.stderr)
+    print(f"Status code: {response.status_code}", file=sys.stderr)
+    print(f"Full response: {response.text}", file=sys.stderr)
     sys.exit(1)
 except Exception as e:
     print(f"Unexpected refresh error: {e}", file=sys.stderr)
