@@ -6,6 +6,9 @@ import time
 import json
 from datetime import datetime, timezone, timedelta
 from openai import OpenAI
+import requests
+import base64
+import threading
 
 # ────────────────────────────────────────────────
 # CONFIG
@@ -13,7 +16,8 @@ from openai import OpenAI
 BOT_USERNAME = "slapchampai"
 COOLDOWN_SECONDS = 300
 COOLDOWN_FILE = "cooldowns.json"
-POLL_INTERVAL = 180           # 3 minutes - low read usage
+POLL_INTERVAL = 180           # Poll mentions every 3 min
+REFRESH_INTERVAL = 3600       # Refresh access_token every 60 min (before expiry)
 GIF_PROBABILITY = 0.30
 
 SLAP_GIFS = [
@@ -54,166 +58,87 @@ def save_cooldowns(cooldowns):
 cooldowns = load_cooldowns()
 
 # ────────────────────────────────────────────────
-# X OAuth 2.0 - Use new Bearer token from Postman for testing
+# Global Tweepy client (refreshed in background)
 # ────────────────────────────────────────────────
-bearer_token = os.getenv("TWITTER_OAUTH2_ACCESS_TOKEN") or os.getenv("TWITTER_BEARER_TOKEN")
-
-if bearer_token:
-    print("Using NEW OAuth 2.0 Bearer token from Postman for testing", file=sys.stderr)
-else:
-    print("No OAuth 2.0 Bearer token found in TWITTER_OAUTH2_ACCESS_TOKEN or TWITTER_BEARER_TOKEN", file=sys.stderr)
-    print("Falling back to legacy auth (may fail for v2 endpoints)", file=sys.stderr)
-    bearer_token = os.getenv("TWITTER_ACCESS_TOKEN")  # old fallback
-    if not bearer_token:
-        print("Missing ANY bearer/access token - cannot start", file=sys.stderr)
-        sys.exit(1)
-
-# Explicitly use Bearer token only (disable all OAuth 1.0a fields to avoid "NoneType" error)
-client = tweepy.Client(
-    bearer_token=bearer_token,
-    consumer_key=None,
-    consumer_secret=None,
-    access_token=None,
-    access_token_secret=None,
-    wait_on_rate_limit=True
-)
-
-print("Tweepy Client initialized with Bearer token", file=sys.stderr)
-
-# Verify auth + ONE-TIME TEST POST
-try:
-    me = client.get_me().data
-    print(f"Connected as @{me.username} with OAuth 2.0 user context", file=sys.stderr)
-
-    print("Running one-time write test...", file=sys.stderr)
-    test_response = client.create_tweet(
-        text="Test write from SlapchampAI – please ignore this #debug"
-    )
-    print(f"TEST POST SUCCESS – Tweet ID: {test_response.data['id']}", file=sys.stderr)
-except Exception as e:
-    print(f"Auth or test failed: {e}", file=sys.stderr)
-    sys.exit(1)
+client = None
 
 # ────────────────────────────────────────────────
-# Real Grok roast generator
+# Manual Refresh Function
 # ────────────────────────────────────────────────
-def generate_nuclear_roast(target_username, attacker_username, bio_snippet=""):
-    if not grok_client.api_key:
-        return f"@{target_username} got slapped into next week! (API key issue) 🔥"
+def refresh_access_token():
+    global client
 
-    try:
-        prompt = f"""
-Brutal savage roast for @{target_username}.
-Bio snippet (use if funny): "{bio_snippet}"
-Max 50 words. Nuclear mean, personal, hilarious, no mercy.
-End with 🔥
-From: @{attacker_username}
-""".strip()
+    client_id = os.getenv("TWITTER_CLIENT_ID")
+    refresh_token = os.getenv("TWITTER_REFRESH_TOKEN")
+    client_secret = os.getenv("TWITTER_CLIENT_SECRET")
 
-        response = grok_client.chat.completions.create(
-            model="grok-beta",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=70,
-            temperature=0.9,
-        )
+    print(f"Loaded TWITTER_CLIENT_ID: {'present' if client_id else 'MISSING'}", file=sys.stderr)
+    print(f"Loaded TWITTER_REFRESH_TOKEN: {'present' if refresh_token else 'MISSING'}", file=sys.stderr)
+    print(f"Loaded TWITTER_CLIENT_SECRET: {'present' if client_secret else 'MISSING (required!)'}", file=sys.stderr)
 
-        roast = response.choices[0].message.content.strip()
-        return roast[:190]
+    if not client_id or not refresh_token:
+        print("Missing TWITTER_CLIENT_ID or TWITTER_REFRESH_TOKEN", file=sys.stderr)
+        return False
 
-    except Exception as e:
-        print(f"Grok API error: {e}", file=sys.stderr)
-        return f"@{target_username} your vibe is straight landfill. Roasted. 🔥"
+    refresh_url = "https://api.twitter.com/2/oauth2/token"
+
+    data = {
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token",
+        "client_id": client_id,
+    }
+
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
+    auth = None
+    if client_secret:
+        auth_str = f"{client_id}:{client_secret}"
+        auth_b64 = base64.b64encode(auth_str.encode()).decode()
+        headers["Authorization"] = f"Basic {auth_b64}"
+        print("Using Basic Auth with client_secret", file=sys.stderr)
+
+    for attempt in range(3):
+        try:
+            print(f"Refreshing access token (attempt {attempt + 1}/3)...", file=sys.stderr)
+            response = requests.post(refresh_url, data=data, headers=headers, auth=auth)
+            response.raise_for_status()
+            token_response = response.json()
+            print("Token response:", token_response, file=sys.stderr)
+
+            access_token = token_response["access_token"]
+
+            # Handle rotation
+            if "refresh_token" in token_response:
+                new_refresh = token_response["refresh_token"]
+                print(f"!!! REFRESH TOKEN ROTATED !!! New: {new_refresh}", file=sys.stderr)
+                print("UPDATE RAILWAY WITH NEW TWITTER_REFRESH_TOKEN AND REDEPLOY!", file=sys.stderr)
+
+            # Update global client
+            client = tweepy.Client(
+                bearer_token=access_token,
+                wait_on_rate_limit=True
+            )
+            print("Refresh successful - client updated", file=sys.stderr)
+            return True
+
+        except Exception as e:
+            print(f"Refresh failed (attempt {attempt + 1}): {e}", file=sys.stderr)
+            if 'response' in locals():
+                print(f"Status: {response.status_code} | Body: {response.text}", file=sys.stderr)
+            if attempt < 2:
+                time.sleep(10)  # delay before retry
+            else:
+                return False
+
+    return False
 
 # ────────────────────────────────────────────────
-# Main polling loop – activates on ANY mention containing "slap"
+# Background Refresh Thread
 # ────────────────────────────────────────────────
-print("Polling started – listening for any @slapchampai mention containing 'slap'", file=sys.stderr)
-since_id = 1  # Updated from mentions
-
-while True:
-    try:
-        tweets = client.search_recent_tweets(
-            query=f"@{BOT_USERNAME} slap -is:retweet lang:en",
-            max_results=10,
-            since_id=since_id,
-            tweet_fields=["author_id", "entities", "id", "created_at"],
-            expansions=["author_id"],
-            user_fields=["username", "description"]
-        )
-
-        if tweets.data:
-            since_id = max(t.id for t in tweets.data)
-
-            for tweet in tweets.data:
-                if tweet.author_id == me.id:
-                    continue
-
-                text = tweet.text.lower()
-                if "slap" not in text:
-                    continue
-
-                mentions = tweet.entities.get("mentions", [])
-                target_username = None
-                for mention in mentions:
-                    if mention["username"].lower() != BOT_USERNAME.lower():
-                        target_username = mention["username"]
-                        break
-
-                if not target_username:
-                    continue
-
-                now = datetime.now(timezone.utc)
-                key = f"{tweet.author_id}_{target_username}"
-                if key in cooldowns:
-                    last = datetime.fromisoformat(cooldowns[key])
-                    if now - last < timedelta(seconds=COOLDOWN_SECONDS):
-                        print(f"Cooldown active for {key}", file=sys.stderr)
-                        continue
-
-                cooldowns[key] = now.isoformat()
-                save_cooldowns(cooldowns)
-
-                try:
-                    target_user = client.get_user(username=target_username, user_fields=["description"]).data
-                    bio_snippet = target_user.description[:60] if target_user and target_user.description else ""
-                except:
-                    bio_snippet = ""
-
-                roast = generate_nuclear_roast(
-                    target_username,
-                    tweet.author.username if tweets.includes and 'users' in tweets.includes else "someone",
-                    bio_snippet
-                )
-
-                gif = random.choice(SLAP_GIFS) if random.random() < GIF_PROBABILITY else ""
-
-                reply_text = f"@{target_username} {roast}\n\n{gif}\n— @{tweet.author.username} 🔥"
-                reply_text = reply_text[:270]
-
-                try:
-                    resp = client.create_tweet(
-                        text=reply_text,
-                        in_reply_to_tweet_id=tweet.id
-                    )
-                    print(f"Slapped @{target_username} - Reply ID: {resp.data['id']}", file=sys.stderr)
-                except tweepy.TweepyException as e:
-                    print(f"Reply failed: {e}", file=sys.stderr)
-                    if hasattr(e, 'response') and e.response:
-                        print(f"Status: {e.response.status_code} | Body: {e.response.text}", file=sys.stderr)
-
-        else:
-            print("No new mentions found", file=sys.stderr)
-
-        time.sleep(POLL_INTERVAL)
-
-    except tweepy.TooManyRequests:
-        print("Rate limit hit - sleeping 15 min", file=sys.stderr)
-        time.sleep(900)
-    except tweepy.TweepyException as e:
-        print(f"Loop error (Tweepy): {e}", file=sys.stderr)
-        if hasattr(e, 'response') and e.response:
-            print(f"Status: {e.response.status_code} | Body: {e.response.text}", file=sys.stderr)
-        time.sleep(180)
-    except Exception as e:
-        print(f"Unexpected loop error: {e}", file=sys.stderr)
-        time.sleep(180)
+def background_refresh():
+    while True:
+        time.sleep(REFRESH_INTERVAL)
+        if not refresh_access_token():
+            print("Background refresh failed - retrying next cycle", file=sys.stderr
