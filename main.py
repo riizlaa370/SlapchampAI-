@@ -6,8 +6,6 @@ import time
 import json
 from datetime import datetime, timezone, timedelta
 from openai import OpenAI
-import requests
-import base64
 
 # ────────────────────────────────────────────────
 # CONFIG
@@ -56,27 +54,31 @@ def save_cooldowns(cooldowns):
 cooldowns = load_cooldowns()
 
 # ────────────────────────────────────────────────
-# X OAuth 2.0 - Temporary Direct Access Token (for testing)
+# X OAuth 2.0 - Use new Bearer token from Postman for testing
 # ────────────────────────────────────────────────
-# Prefer new OAuth 2.0 token from Postman if set
-access_token = os.getenv("TWITTER_OAUTH2_ACCESS_TOKEN") or os.getenv("TWITTER_BEARER_TOKEN")
+bearer_token = os.getenv("TWITTER_OAUTH2_ACCESS_TOKEN") or os.getenv("TWITTER_BEARER_TOKEN")
 
-if access_token:
+if bearer_token:
     print("Using NEW OAuth 2.0 Bearer token from Postman for testing", file=sys.stderr)
 else:
-    print("No new OAuth 2.0 token found - falling back to old auth", file=sys.stderr)
-    # Fallback to your old OAuth 1.0a token if you have it
-    access_token = os.getenv("TWITTER_ACCESS_TOKEN")
-    if not access_token:
-        print("Missing ANY access token for testing", file=sys.stderr)
+    print("No OAuth 2.0 Bearer token found in TWITTER_OAUTH2_ACCESS_TOKEN or TWITTER_BEARER_TOKEN", file=sys.stderr)
+    print("Falling back to legacy auth (may fail for v2 endpoints)", file=sys.stderr)
+    bearer_token = os.getenv("TWITTER_ACCESS_TOKEN")  # old fallback
+    if not bearer_token:
+        print("Missing ANY bearer/access token - cannot start", file=sys.stderr)
         sys.exit(1)
 
+# Explicitly use Bearer token only (disable all OAuth 1.0a fields to avoid "NoneType" error)
 client = tweepy.Client(
-    bearer_token=access_token,
+    bearer_token=bearer_token,
+    consumer_key=None,
+    consumer_secret=None,
+    access_token=None,
+    access_token_secret=None,
     wait_on_rate_limit=True
 )
 
-print("Client initialized with access_token", file=sys.stderr)
+print("Tweepy Client initialized with Bearer token", file=sys.stderr)
 
 # Verify auth + ONE-TIME TEST POST
 try:
