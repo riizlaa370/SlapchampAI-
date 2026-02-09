@@ -141,4 +141,150 @@ def background_refresh():
     while True:
         time.sleep(REFRESH_INTERVAL)
         if not refresh_access_token():
-            print("Background refresh failed - retrying next cycle", file=sys.stderr
+            print("Background refresh failed - retrying next cycle", file=sys.stderr)
+
+# Start background refresh
+threading.Thread(target=background_refresh, daemon=True).start()
+
+# Initial refresh on startup
+if not refresh_access_token():
+    print("Initial refresh failed - exiting", file=sys.stderr)
+    sys.exit(1)
+
+# Verify auth + TEST POST
+try:
+    me = client.get_me().data
+    print(f"Connected as @{me.username}", file=sys.stderr)
+
+    print("Running one-time write test...", file=sys.stderr)
+    test_response = client.create_tweet(
+        text="Test write from SlapchampAI – please ignore this #debug"
+    )
+    print(f"TEST POST SUCCESS – Tweet ID: {test_response.data['id']}", file=sys.stderr)
+except Exception as e:
+    print(f"Auth/test failed: {e}", file=sys.stderr)
+    sys.exit(1)
+
+# ────────────────────────────────────────────────
+# Real Grok roast generator
+# ────────────────────────────────────────────────
+def generate_nuclear_roast(target_username, attacker_username, bio_snippet=""):
+    if not grok_client.api_key:
+        return f"@{target_username} got slapped into next week! (API key issue) 🔥"
+
+    try:
+        prompt = f"""
+Brutal savage roast for @{target_username}.
+Bio snippet (use if funny): "{bio_snippet}"
+Max 50 words. Nuclear mean, personal, hilarious, no mercy.
+End with 🔥
+From: @{attacker_username}
+""".strip()
+
+        response = grok_client.chat.completions.create(
+            model="grok-beta",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=70,
+            temperature=0.9,
+        )
+
+        roast = response.choices[0].message.content.strip()
+        return roast[:190]
+
+    except Exception as e:
+        print(f"Grok API error: {e}", file=sys.stderr)
+        return f"@{target_username} your vibe is straight landfill. Roasted. 🔥"
+
+# ────────────────────────────────────────────────
+# Main polling loop
+# ────────────────────────────────────────────────
+print("Polling started – listening for any @slapchampai mention containing 'slap'", file=sys.stderr)
+since_id = 1
+
+while True:
+    try:
+        tweets = client.search_recent_tweets(
+            query=f"@{BOT_USERNAME} slap -is:retweet lang:en",
+            max_results=10,
+            since_id=since_id,
+            tweet_fields=["author_id", "entities", "id", "created_at"],
+            expansions=["author_id"],
+            user_fields=["username", "description"]
+        )
+
+        if tweets.data:
+            since_id = max(t.id for t in tweets.data)
+
+            for tweet in tweets.data:
+                if tweet.author_id == me['id']:
+                    continue
+
+                text = tweet.text.lower()
+                if "slap" not in text:
+                    continue
+
+                mentions = tweet.entities.get("mentions", [])
+                target_username = None
+                for mention in mentions:
+                    if mention["username"].lower() != BOT_USERNAME.lower():
+                        target_username = mention["username"]
+                        break
+
+                if not target_username:
+                    continue
+
+                now = datetime.now(timezone.utc)
+                key = f"{tweet.author_id}_{target_username}"
+                if key in cooldowns:
+                    last = datetime.fromisoformat(cooldowns[key])
+                    if now - last < timedelta(seconds=COOLDOWN_SECONDS):
+                        print(f"Cooldown active for {key}", file=sys.stderr)
+                        continue
+
+                cooldowns[key] = now.isoformat()
+                save_cooldowns(cooldowns)
+
+                try:
+                    target_user = client.get_user(username=target_username, user_fields=["description"]).data
+                    bio_snippet = target_user.description[:60] if target_user and target_user.description else ""
+                except:
+                    bio_snippet = ""
+
+                roast = generate_nuclear_roast(
+                    target_username,
+                    tweet.author.username if tweets.includes and 'users' in tweets.includes else "someone",
+                    bio_snippet
+                )
+
+                gif = random.choice(SLAP_GIFS) if random.random() < GIF_PROBABILITY else ""
+
+                reply_text = f"@{target_username} {roast}\n\n{gif}\n— @{tweet.author.username} 🔥"
+                reply_text = reply_text[:270]
+
+                try:
+                    resp = client.create_tweet(
+                        text=reply_text,
+                        in_reply_to_tweet_id=tweet.id
+                    )
+                    print(f"Slapped @{target_username} - Reply ID: {resp.data['id']}", file=sys.stderr)
+                except tweepy.TweepyException as e:
+                    print(f"Reply failed: {e}", file=sys.stderr)
+                    if hasattr(e, 'response') and e.response:
+                        print(f"Status: {e.response.status_code} | Body: {e.response.text}", file=sys.stderr)
+
+        else:
+            print("No new mentions found", file=sys.stderr)
+
+        time.sleep(POLL_INTERVAL)
+
+    except tweepy.TooManyRequests:
+        print("Rate limit hit - sleeping 15 min", file=sys.stderr)
+        time.sleep(900)
+    except tweepy.TweepyException as e:
+        print(f"Loop error (Tweepy): {e}", file=sys.stderr)
+        if hasattr(e, 'response') and e.response:
+            print(f"Status: {e.response.status_code} | Body: {e.response.text}", file=sys.stderr)
+        time.sleep(180)
+    except Exception as e:
+        print(f"Unexpected loop error: {e}", file=sys.stderr)
+        time.sleep(180)
