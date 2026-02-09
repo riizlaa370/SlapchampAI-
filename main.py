@@ -25,7 +25,7 @@ SLAP_GIFS = [
     "https://tenor.com/view/anime-slap-gif-12345678",
     "https://tenor.com/view/funny-slap-cat-gif-98765432",
     "https://tenor.com/view/will-smith-slap-chris-rock-gif-24798075",
-    "https://tenor.com/view/slap-gif-19910281",
+    
 ]
 
 # ────────────────────────────────────────────────
