@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from openai import OpenAI
 import requests
 import base64
-import urllib.parse
+import threading
 
 # ────────────────────────────────────────────────
 # CONFIG
@@ -16,7 +16,8 @@ import urllib.parse
 BOT_USERNAME = "slapchampai"
 COOLDOWN_SECONDS = 300
 COOLDOWN_FILE = "cooldowns.json"
-POLL_INTERVAL = 180           # 3 minutes
+POLL_INTERVAL = 180           # Poll mentions every 3 min
+REFRESH_INTERVAL = 3600       # Refresh access_token every 60 min
 GIF_PROBABILITY = 0.30
 
 SLAP_GIFS = [
@@ -57,21 +58,28 @@ def save_cooldowns(cooldowns):
 cooldowns = load_cooldowns()
 
 # ────────────────────────────────────────────────
-# Manual Refresh - Direct from refresh_token
+# Global Tweepy client
+# ────────────────────────────────────────────────
+client = None
+
+# ────────────────────────────────────────────────
+# Manual Refresh Function - Uses OAUTH_REFRESH_TOKEN
 # ────────────────────────────────────────────────
 def refresh_access_token():
+    global client
+
     client_id = os.getenv("TWITTER_CLIENT_ID")
-    refresh_token = os.getenv("TWITTER_REFRESH_TOKEN")
+    refresh_token = os.getenv("OAUTH_REFRESH_TOKEN") or os.getenv("TWITTER_REFRESH_TOKEN")  # detect both names
     client_secret = os.getenv("TWITTER_CLIENT_SECRET")
 
     print(f"Loaded TWITTER_CLIENT_ID: {'present' if client_id else 'MISSING'}", file=sys.stderr)
-    print(f"Loaded TWITTER_REFRESH_TOKEN: {'present' if refresh_token else 'MISSING'}", file=sys.stderr)
-    print(f"Loaded TWITTER_CLIENT_SECRET: {'present' if client_secret else 'MISSING - REQUIRED for refresh'}", file=sys.stderr)
+    print(f"Loaded refresh token from OAUTH_REFRESH_TOKEN or TWITTER_REFRESH_TOKEN: {'present' if refresh_token else 'MISSING'}", file=sys.stderr)
     print(f"Refresh token length: {len(refresh_token) if refresh_token else 0}", file=sys.stderr)
+    print(f"Loaded TWITTER_CLIENT_SECRET: {'present' if client_secret else 'MISSING - REQUIRED'}", file=sys.stderr)
 
     if not client_id or not refresh_token:
-        print("Missing TWITTER_CLIENT_ID or TWITTER_REFRESH_TOKEN", file=sys.stderr)
-        return None
+        print("Missing TWITTER_CLIENT_ID or refresh token", file=sys.stderr)
+        return False
 
     refresh_url = "https://api.twitter.com/2/oauth2/token"
 
@@ -80,9 +88,6 @@ def refresh_access_token():
         "grant_type": "refresh_token",
         "client_id": client_id,
     }
-
-    # Encode data as form-urlencoded
-    form_data = urllib.parse.urlencode(data)
 
     headers = {
         "Content-Type": "application/x-www-form-urlencoded"
@@ -94,52 +99,60 @@ def refresh_access_token():
         auth_b64 = base64.b64encode(auth_str.encode()).decode()
         headers["Authorization"] = f"Basic {auth_b64}"
         print("Added Basic Auth header", file=sys.stderr)
-    else:
-        print("No client_secret - refresh may fail for Confidential apps", file=sys.stderr)
 
-    print(f"Sending refresh request to {refresh_url}", file=sys.stderr)
-    print(f"Form data: {form_data}", file=sys.stderr)
+    for attempt in range(3):
+        try:
+            print(f"Refreshing access token (attempt {attempt + 1}/3)...", file=sys.stderr)
+            response = requests.post(refresh_url, data=data, headers=headers, auth=auth)
+            print(f"Response status: {response.status_code}", file=sys.stderr)
 
-    try:
-        response = requests.post(refresh_url, data=form_data, headers=headers, auth=auth)
-        print(f"Response status: {response.status_code}", file=sys.stderr)
+            if response.status_code == 200:
+                token_response = response.json()
+                print("Full token response:", token_response, file=sys.stderr)
 
-        if response.status_code == 200:
-            token_response = response.json()
-            print("Full token response:", token_response, file=sys.stderr)
+                access_token = token_response["access_token"]
 
-            access_token = token_response["access_token"]
-            if "refresh_token" in token_response:
-                new_refresh = token_response["refresh_token"]
-                print(f"!!! REFRESH TOKEN ROTATED !!! New: {new_refresh}", file=sys.stderr)
-                print("UPDATE RAILWAY WITH NEW TWITTER_REFRESH_TOKEN AND REDEPLOY!", file=sys.stderr)
+                if "refresh_token" in token_response:
+                    new_refresh = token_response["refresh_token"]
+                    print(f"!!! REFRESH TOKEN ROTATED !!! New: {new_refresh}", file=sys.stderr)
+                    print("UPDATE RAILWAY WITH NEW OAUTH_REFRESH_TOKEN AND REDEPLOY!", file=sys.stderr)
 
-            return access_token
-        else:
-            print(f"Refresh failed - Status: {response.status_code}", file=sys.stderr)
-            print(f"Response body: {response.text}", file=sys.stderr)
-            return None
+                client = tweepy.Client(
+                    bearer_token=access_token,
+                    wait_on_rate_limit=True
+                )
+                print("Refresh successful - client updated", file=sys.stderr)
+                return True
+            else:
+                print(f"Refresh failed - Status: {response.status_code}", file=sys.stderr)
+                print(f"Body: {response.text}", file=sys.stderr)
+                if attempt < 2:
+                    time.sleep(10)
 
-    except Exception as e:
-        print(f"Refresh exception: {e}", file=sys.stderr)
-        return None
+        except Exception as e:
+            print(f"Refresh exception: {e}", file=sys.stderr)
+
+    return False
 
 # ────────────────────────────────────────────────
-# Initialize client with refresh
+# Background Refresh Thread
 # ────────────────────────────────────────────────
-access_token = refresh_access_token()
-if not access_token:
-    print("Failed to get access token on startup - exiting", file=sys.stderr)
+def background_refresh():
+    while True:
+        time.sleep(REFRESH_INTERVAL)
+        if not refresh_access_token():
+            print("Background refresh failed - retrying next cycle", file=sys.stderr)
+
+threading.Thread(target=background_refresh, daemon=True).start()
+
+# Initial refresh
+if not refresh_access_token():
+    print("Initial refresh failed - exiting", file=sys.stderr)
     sys.exit(1)
 
-client = tweepy.Client(
-    bearer_token=access_token,
-    wait_on_rate_limit=True
-)
-
-print("Tweepy Client initialized with refreshed access token", file=sys.stderr)
-
+# ────────────────────────────────────────────────
 # Verify auth + TEST POST
+# ────────────────────────────────────────────────
 try:
     me = client.get_me().data
     print(f"Connected as @{me.username}", file=sys.stderr)
