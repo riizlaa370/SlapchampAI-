@@ -63,22 +63,22 @@ cooldowns = load_cooldowns()
 client = None
 
 # ────────────────────────────────────────────────
-# Manual Refresh Function - Uses TWITTER_OAUTH_TOKEN
+# Manual Refresh Function - Uses your TWITTER_OAUTH2_REFRESH_TOKEN
 # ────────────────────────────────────────────────
 def refresh_access_token():
     global client
 
     client_id = os.getenv("TWITTER_CLIENT_ID")
-    refresh_token = os.getenv("TWITTER_OAUTH_TOKEN")
+    refresh_token = os.getenv("TWITTER_OAUTH2_REFRESH_TOKEN")  # ← changed to your exact name
     client_secret = os.getenv("TWITTER_CLIENT_SECRET")
 
     print(f"Loaded TWITTER_CLIENT_ID: {'present' if client_id else 'MISSING'}", file=sys.stderr)
-    print(f"Loaded TWITTER_OAUTH_TOKEN: {'present' if refresh_token else 'MISSING'}", file=sys.stderr)
+    print(f"Loaded TWITTER_OAUTH2_REFRESH_TOKEN: {'present' if refresh_token else 'MISSING'}", file=sys.stderr)
     print(f"Refresh token length: {len(refresh_token) if refresh_token else 0}", file=sys.stderr)
     print(f"Loaded TWITTER_CLIENT_SECRET: {'present' if client_secret else 'MISSING - REQUIRED'}", file=sys.stderr)
 
     if not client_id or not refresh_token:
-        print("Missing TWITTER_CLIENT_ID or TWITTER_OAUTH_TOKEN", file=sys.stderr)
+        print("Missing TWITTER_CLIENT_ID or TWITTER_OAUTH2_REFRESH_TOKEN", file=sys.stderr)
         return False
 
     refresh_url = "https://api.twitter.com/2/oauth2/token"
@@ -115,7 +115,7 @@ def refresh_access_token():
                 if "refresh_token" in token_response:
                     new_refresh = token_response["refresh_token"]
                     print(f"!!! REFRESH TOKEN ROTATED !!! New: {new_refresh}", file=sys.stderr)
-                    print("UPDATE RAILWAY WITH NEW TWITTER_OAUTH_TOKEN AND REDEPLOY!", file=sys.stderr)
+                    print("UPDATE RAILWAY WITH NEW TWITTER_OAUTH2_REFRESH_TOKEN AND REDEPLOY!", file=sys.stderr)
 
                 client = tweepy.Client(
                     bearer_token=access_token,
