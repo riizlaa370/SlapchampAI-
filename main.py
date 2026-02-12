@@ -15,7 +15,8 @@ import threading
 # ────────────────────────────────────────────────
 BOT_USERNAME = "slapchampai"
 COOLDOWN_SECONDS = 300
-COOLDOWN_FILE = "cooldowns.json"
+COOLDOWN_FILE = "/app/data/cooldowns.json"  # persistent
+PERSISTENT_TOKEN_FILE = "/app/data/refresh_token.txt"  # persistent refresh token
 POLL_INTERVAL = 180           # Poll mentions every 3 min
 REFRESH_INTERVAL = 3600       # Refresh access_token every 60 min
 GIF_PROBABILITY = 0.30
@@ -37,7 +38,7 @@ grok_client = OpenAI(
 )
 
 # ────────────────────────────────────────────────
-# Cooldown helpers
+# Cooldown helpers (persistent)
 # ────────────────────────────────────────────────
 def load_cooldowns():
     if os.path.exists(COOLDOWN_FILE):
@@ -63,19 +64,29 @@ cooldowns = load_cooldowns()
 client = None
 
 # ────────────────────────────────────────────────
-# Manual Refresh Function - Uses your TWITTER_OAUTH2_REFRESH_TOKEN
+# Manual Refresh Function
 # ────────────────────────────────────────────────
 def refresh_access_token():
     global client
 
     client_id = os.getenv("TWITTER_CLIENT_ID")
-    refresh_token = os.getenv("TWITTER_OAUTH2_REFRESH_TOKEN")  # ← changed to your exact name
+    refresh_token = os.getenv("TWITTER_OAUTH2_REFRESH_TOKEN")
+
+    # Fallback: load from persistent file if env var is empty or missing
+    if not refresh_token and os.path.exists(PERSISTENT_TOKEN_FILE):
+        try:
+            with open(PERSISTENT_TOKEN_FILE, "r") as f:
+                refresh_token = f.read().strip()
+            print(f"Loaded refresh token from persistent file: {PERSISTENT_TOKEN_FILE}", file=sys.stderr)
+        except Exception as e:
+            print(f"Failed to load persistent refresh token: {e}", file=sys.stderr)
+
     client_secret = os.getenv("TWITTER_CLIENT_SECRET")
 
     print(f"Loaded TWITTER_CLIENT_ID: {'present' if client_id else 'MISSING'}", file=sys.stderr)
     print(f"Loaded TWITTER_OAUTH2_REFRESH_TOKEN: {'present' if refresh_token else 'MISSING'}", file=sys.stderr)
     print(f"Refresh token length: {len(refresh_token) if refresh_token else 0}", file=sys.stderr)
-    print(f"Loaded TWITTER_CLIENT_SECRET: {'present' if client_secret else 'MISSING - REQUIRED'}", file=sys.stderr)
+    print(f"Loaded TWITTER_CLIENT_SECRET: {'present' if client_secret else 'MISSING - REQUIRED for Confidential apps'}", file=sys.stderr)
 
     if not client_id or not refresh_token:
         print("Missing TWITTER_CLIENT_ID or TWITTER_OAUTH2_REFRESH_TOKEN", file=sys.stderr)
@@ -112,10 +123,16 @@ def refresh_access_token():
 
                 access_token = token_response["access_token"]
 
+                # Handle rotation and save new token to persistent file
                 if "refresh_token" in token_response:
                     new_refresh = token_response["refresh_token"]
                     print(f"!!! REFRESH TOKEN ROTATED !!! New: {new_refresh}", file=sys.stderr)
-                    print("UPDATE RAILWAY WITH NEW TWITTER_OAUTH2_REFRESH_TOKEN AND REDEPLOY!", file=sys.stderr)
+                    try:
+                        with open(PERSISTENT_TOKEN_FILE, "w") as f:
+                            f.write(new_refresh)
+                        print(f"Saved rotated refresh token to persistent file: {PERSISTENT_TOKEN_FILE}", file=sys.stderr)
+                    except Exception as e:
+                        print(f"Failed to save rotated token: {e}", file=sys.stderr)
 
                 client = tweepy.Client(
                     bearer_token=access_token,
@@ -123,6 +140,7 @@ def refresh_access_token():
                 )
                 print("Refresh successful - client updated", file=sys.stderr)
                 return True
+
             else:
                 print(f"Refresh failed - Status: {response.status_code}", file=sys.stderr)
                 print(f"Body: {response.text}", file=sys.stderr)
@@ -135,7 +153,7 @@ def refresh_access_token():
     return False
 
 # ────────────────────────────────────────────────
-# Background Refresh Thread
+# Background Refresh Thread (proactive refresh)
 # ────────────────────────────────────────────────
 def background_refresh():
     while True:
@@ -145,17 +163,17 @@ def background_refresh():
 
 threading.Thread(target=background_refresh, daemon=True).start()
 
-# Initial refresh
+# Initial refresh on startup
 if not refresh_access_token():
     print("Initial refresh failed - exiting", file=sys.stderr)
     sys.exit(1)
 
 # ────────────────────────────────────────────────
-# Verify auth + TEST POST
+# Verify auth + ONE-TIME TEST POST
 # ────────────────────────────────────────────────
 try:
     me = client.get_me().data
-    print(f"Connected as @{me.username}", file=sys.stderr)
+    print(f"Connected as @{me.username} with OAuth 2.0 user context", file=sys.stderr)
 
     print("Running one-time write test...", file=sys.stderr)
     test_response = client.create_tweet(
@@ -163,7 +181,7 @@ try:
     )
     print(f"TEST POST SUCCESS – Tweet ID: {test_response.data['id']}", file=sys.stderr)
 except Exception as e:
-    print(f"Auth/test failed: {e}", file=sys.stderr)
+    print(f"Auth or test failed: {e}", file=sys.stderr)
     sys.exit(1)
 
 # ────────────────────────────────────────────────
@@ -197,7 +215,7 @@ From: @{attacker_username}
         return f"@{target_username} your vibe is straight landfill. Roasted. 🔥"
 
 # ────────────────────────────────────────────────
-# Main polling loop
+# Main polling loop – activates on ANY mention containing "slap"
 # ────────────────────────────────────────────────
 print("Polling started – listening for any @slapchampai mention containing 'slap'", file=sys.stderr)
 since_id = 1
@@ -217,7 +235,7 @@ while True:
             since_id = max(t.id for t in tweets.data)
 
             for tweet in tweets.data:
-                if tweet.author_id == me['id']:
+                if tweet.author_id == me.id:
                     continue
 
                 text = tweet.text.lower()
