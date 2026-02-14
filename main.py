@@ -1,12 +1,13 @@
 import os
 import time
 import random
+import re
 from datetime import datetime, timedelta
 import json
 import requests
 import tweepy
 
-# ── Environment variables ───────────────────────────────────────────────────
+# ── Env vars ────────────────────────────────────────────────────────────────
 CONSUMER_KEY = os.environ.get('TWITTER_CONSUMER_KEY')
 CONSUMER_SECRET = os.environ.get('TWITTER_CONSUMER_SECRET')
 ACCESS_TOKEN = os.environ.get('TWITTER_ACCESS_TOKEN')
@@ -14,18 +15,15 @@ ACCESS_TOKEN_SECRET = os.environ.get('TWITTER_ACCESS_TOKEN_SECRET')
 GROK_API_KEY = os.environ.get('GROK_API_KEY')
 GIPHY_API_KEY = os.environ.get('GIPHY_API_KEY')
 
-# Debug loading status
-print(f"Loaded Twitter keys: Consumer {CONSUMER_KEY[:5] if CONSUMER_KEY else 'MISSING'}..., "
-      f"Access Token {ACCESS_TOKEN[:5] if ACCESS_TOKEN else 'MISSING'}...")
-print(f"GIPHY key present: {'YES' if GIPHY_API_KEY else 'MISSING'}")
-print(f"Grok key present: {'YES' if GROK_API_KEY else 'MISSING'}")
+print(f"Loaded: Twitter OK | GIPHY {'YES' if GIPHY_API_KEY else 'MISSING'} | Grok {'YES' if GROK_API_KEY else 'MISSING'}")
 
 if not all([CONSUMER_KEY, CONSUMER_SECRET, ACCESS_TOKEN, ACCESS_TOKEN_SECRET]):
-    raise ValueError("Missing Twitter OAuth 1.0a credentials!")
+    raise ValueError("Missing Twitter OAuth vars!")
 
-# ── Cooldown persistence ────────────────────────────────────────────────────
+# ── Persistence (volume) ────────────────────────────────────────────────────
 DATA_DIR = '/app/data'
 COOLDOWNS_FILE = os.path.join(DATA_DIR, 'cooldowns.json')
+LAST_MENTION_FILE = os.path.join(DATA_DIR, 'last_mention_id.json')
 os.makedirs(DATA_DIR, exist_ok=True)
 
 def load_cooldowns():
@@ -38,10 +36,24 @@ def save_cooldowns(cooldowns):
     with open(COOLDOWNS_FILE, 'w') as f:
         json.dump(cooldowns, f)
 
-cooldowns = load_cooldowns()
-COOLDOWN_PERIOD = timedelta(hours=4)          # Safe for long-term
+def load_last_mention_id():
+    if os.path.exists(LAST_MENTION_FILE):
+        with open(LAST_MENTION_FILE, 'r') as f:
+            data = json.load(f)
+            return data.get('last_id')
+    return None
 
-# ── Tweepy client ───────────────────────────────────────────────────────────
+def save_last_mention_id(last_id):
+    with open(LAST_MENTION_FILE, 'w') as f:
+        json.dump({'last_id': last_id}, f)
+
+cooldowns = load_cooldowns()
+last_mention_id = load_last_mention_id() or None
+print(f"Loaded last_mention_id: {last_mention_id}")
+
+COOLDOWN_PERIOD = timedelta(hours=4)
+
+# ── Tweepy ──────────────────────────────────────────────────────────────────
 client = tweepy.Client(
     consumer_key=CONSUMER_KEY,
     consumer_secret=CONSUMER_SECRET,
@@ -53,66 +65,72 @@ client = tweepy.Client(
 try:
     bot_user = client.get_me(user_auth=True)
     bot_id = bot_user.data.id
-    print(f"Bot authenticated successfully. User ID: {bot_id}")
+    print(f"Authenticated. Bot ID: {bot_id}")
 except Exception as e:
-    print(f"Auth failed: {e}")
+    print(f"Auth fail: {e}")
     raise
 
-# ── Grok roast generator (short & punchy) ──────────────────────────────────
-def get_grok_roast(target_username):
+# ── Extract targets ─────────────────────────────────────────────────────────
+def extract_targets(text, bot_username):
+    mentions = re.findall(r'@(\w+)', text)
+    targets = [u for u in mentions if u.lower() != bot_username.lower()]
+    return list(set(targets))  # unique
+
+# ── Get bio ─────────────────────────────────────────────────────────────────
+def get_user_bio(username):
+    try:
+        user = client.get_user(username=username, user_fields=['description'])
+        return user.data.description.strip()[:200] if user.data and user.data.description else "No bio"
+    except Exception as e:
+        print(f"Bio fetch fail @{username}: {e}")
+        return "No bio"
+
+# ── Grok roast ──────────────────────────────────────────────────────────────
+def get_grok_roast(target_username, target_bio):
+    bio_snippet = target_bio[:150] if target_bio else "no bio"
+    prompt = (
+        f"Short, funny, light-hearted one-sentence roast for @{target_username}. "
+        f"Use this bio: '{bio_snippet}'. Involve a slap. Max 20 words."
+    )
     url = "https://api.x.ai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": "grok-3-mini",
-        "messages": [{
-            "role": "user",
-            "content": f"Short, funny, light-hearted one-sentence roast for @{target_username} involving a slap. Max 20 words."
-        }]
+        "messages": [{"role": "user", "content": prompt}]
     }
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=12)
-        resp.raise_for_status()
-        roast = resp.json()['choices'][0]['message']['content'].strip()
-        # Force shortness
-        if len(roast) > 120:
-            roast = roast[:117] + "..."
-        return roast
+        r = requests.post(url, headers=headers, json=payload, timeout=12)
+        r.raise_for_status()
+        roast = r.json()['choices'][0]['message']['content'].strip()
+        return roast[:120] + "..." if len(roast) > 120 else roast
     except Exception as e:
-        print(f"Grok error: {e}")
-        return f"@{target_username} just got slapped back to the stone age! 💥"
+        print(f"Grok fail: {e}")
+        return f"@{target_username} just got slapped into next week! 💥"
 
-# ── GIPHY GIF fetch ─────────────────────────────────────────────────────────
+# ── GIPHY GIF ───────────────────────────────────────────────────────────────
 def get_slap_gif():
     if not GIPHY_API_KEY:
-        print("GIPHY_API_KEY is missing!")
+        print("GIPHY key missing!")
         return "https://giphy.com/gifs/slap-classic-cartoon-3o6Zt6KHxJTbXCnSvu"
 
-    url = (
-        f"https://api.giphy.com/v1/gifs/search"
-        f"?api_key={GIPHY_API_KEY}"
-        f"&q=slap"
-        f"&limit=10"
-        f"&rating=pg"
-    )
-
+    url = f"https://api.giphy.com/v1/gifs/search?api_key={GIPHY_API_KEY}&q=slap&limit=10&rating=pg"
     try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json().get('data', [])
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        data = r.json().get('data', [])
         if data:
-            gif_url = random.choice(data)['images']['original']['url']
-            print(f"GIPHY success: {gif_url[:60]}...")
-            return gif_url
-        print("GIPHY: No results found")
-        return "https://giphy.com/gifs/fallback-slap-classic-3o6Zt6KHxJTbXCnSvu"
+            gif = random.choice(data)['images']['fixed_height']['url']
+            print(f"GIPHY OK: {gif[:80]}...")
+            return gif
+        return "https://giphy.com/gifs/fallback-slap-3o6Zt6KHxJTbXCnSvu"
     except Exception as e:
-        print(f"GIPHY error: {e} - URL: {url}")
-        return "https://giphy.com/gifs/fallback-slap-classic-3o6Zt6KHxJTbXCnSvu"
+        print(f"GIPHY error: {e}")
+        return "https://giphy.com/gifs/fallback-slap-3o6Zt6KHxJTbXCnSvu"
 
-# ── Main polling loop ──────────────────────────────────────────────────────
-last_mention_id = None
+# ── Polling ─────────────────────────────────────────────────────────────────
+bot_username = "slapchampai"
 MAX_REPLIES_PER_POLL = 3
-POLL_INTERVAL_SEC = 60                  # 1 minute – safe & sustainable
+POLL_INTERVAL_SEC = 60
 
 while True:
     try:
@@ -132,46 +150,61 @@ while True:
             reply_count = 0
             for mention in mentions.data:
                 if reply_count >= MAX_REPLIES_PER_POLL:
-                    print("Max replies this poll reached — skipping rest")
+                    print("Max replies this poll — skip rest")
                     break
 
                 text_lower = mention.text.lower()
                 if 'slap' not in text_lower or mention.author_id == bot_id:
                     continue
 
-                # Basic anti-spam filter
                 if len(text_lower.strip()) < 8 or text_lower.count('slap') > 3:
-                    print(f"Skipping suspicious mention {mention.id}")
+                    print(f"Skip suspicious {mention.id}")
                     continue
 
                 uid = mention.author_id
                 now = datetime.now()
                 if uid in cooldowns and now - datetime.fromisoformat(cooldowns[uid]) < COOLDOWN_PERIOD:
-                    print(f"Cooldown skip: {uid}")
+                    print(f"Cooldown skip {uid}")
                     continue
 
-                author = next((u for u in mentions.includes.get('users', []) if u.id == uid), None)
-                if not author:
+                targets = extract_targets(mention.text, bot_username)
+                if not targets:
+                    print(f"No targets in {mention.id}")
                     continue
 
-                roast = get_grok_roast(author.username)
+                # Roast first target
+                target_username = targets[0]
+                target_bio = get_user_bio(target_username)
+                roast = get_grok_roast(target_username, target_bio)
+
                 gif = get_slap_gif()
-                reply_text = f"@{author.username} {roast} 💥\n{gif}"
+
+                # Signature (Unicode font: monospace/bold-ish)
+                signature = " 𝚙𝚘𝚠𝚎𝚛𝚎𝚍 𝚋𝚢 𝚐𝚛𝚘𝚔😈"
+
+                # Reply text: roast target + signature at end
+                poster = next((u for u in mentions.includes.get('users', []) if u.id == uid), None)
+                poster_tag = f"@{poster.username} " if poster else ""
+                reply_text = f"{poster_tag}@{target_username} {roast}{signature}\n{gif}"
 
                 try:
                     client.create_tweet(text=reply_text, in_reply_to_tweet_id=mention.id)
-                    cooldowns[uid] = now.isoformat()
+                    cooldowns[uid] = now.isoformat()  # Cooldown on poster
                     save_cooldowns(cooldowns)
-                    print(f"Replied to {mention.id} → @{author.username}")
+                    print(f"Replied {mention.id} — roasted @{target_username}")
                     reply_count += 1
-                    time.sleep(random.uniform(12, 28))  # Anti-spam delay
+                    time.sleep(random.uniform(12, 28))
                 except Exception as reply_err:
-                    print(f"Reply failed for {mention.id}: {reply_err}")
+                    print(f"Reply fail {mention.id}: {reply_err}")
 
-                last_mention_id = max(last_mention_id or 0, mention.id)
+            # Save last ID
+            if mentions.data:
+                last_mention_id = max(last_mention_id or 0, max(m.id for m in mentions.data))
+                save_last_mention_id(last_mention_id)
+                print(f"Saved last_mention_id: {last_mention_id}")
 
     except Exception as e:
-        print(f"Polling error: {e}")
-        time.sleep(120)  # Backoff on error
+        print(f"Poll error: {e}")
+        time.sleep(120)
 
     time.sleep(POLL_INTERVAL_SEC)
