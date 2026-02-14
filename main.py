@@ -130,7 +130,7 @@ def get_slap_gif():
 # ── Polling ─────────────────────────────────────────────────────────────────
 bot_username = "slapchampai"
 MAX_REPLIES_PER_POLL = 3
-POLL_INTERVAL_SEC = 60
+POLL_INTERVAL_SEC = 9999999
 
 while True:
     try:
